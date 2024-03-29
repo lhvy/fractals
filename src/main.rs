@@ -24,7 +24,27 @@ impl Default for Adjustments {
 struct Transformations {
     width: usize,
     height: usize,
-    transformations: Vec<Transformation>,
+    x: Vec<Index>,
+    y: Vec<Index>,
+    is_flipped: Vec<bool>,
+    degrees: Vec<Rotation>,
+    adjustments: Vec<Adjustments>,
+}
+
+impl Transformations {
+    fn len(&self) -> usize {
+        self.width * self.height
+    }
+
+    fn get(&self, x: usize, y: usize) -> Transformation {
+        Transformation {
+            x: self.x[y * self.width + x],
+            y: self.y[y * self.width + x],
+            is_flipped: self.is_flipped[y * self.width + x],
+            degrees: self.degrees[y * self.width + x],
+            adjustments: self.adjustments[y * self.width + x],
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +78,13 @@ fn main() {
     // Reduce and save each rotation
     let t = compress(reduce(&img, 4), 8, 4, 8);
 
-    dbg!(t.transformations.len() * std::mem::size_of::<Transformation>());
+    dbg!(
+        t.len()
+            * (std::mem::size_of::<Index>() * 2
+                + std::mem::size_of::<bool>()
+                + std::mem::size_of::<Rotation>()
+                + std::mem::size_of::<Adjustments>())
+    );
 
     let iterations = decompress(t, 8, 4, 8);
 
@@ -73,7 +99,12 @@ fn main() {
 }
 
 fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) -> Transformations {
-    let mut transformations = Vec::new();
+    let mut t_x = Vec::new();
+    let mut t_y = Vec::new();
+    let mut t_is_flipped = Vec::new();
+    let mut t_degrees = Vec::new();
+    let mut t_adjustments = Vec::new();
+
     let transformed_blocks = gen_all_transformations(m.clone(), src_size, dest_size, step);
 
     let width = m.ncols() / dest_size;
@@ -105,7 +136,12 @@ fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) ->
                     min = d;
                 }
             }
-            transformations.push(min_t.unwrap());
+            let min_t = min_t.unwrap();
+            t_x.push(min_t.x);
+            t_y.push(min_t.y);
+            t_is_flipped.push(min_t.is_flipped);
+            t_degrees.push(min_t.degrees);
+            t_adjustments.push(min_t.adjustments);
             bar.inc(1);
         }
     }
@@ -113,7 +149,11 @@ fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) ->
     Transformations {
         width,
         height,
-        transformations,
+        x: t_x,
+        y: t_y,
+        is_flipped: t_is_flipped,
+        degrees: t_degrees,
+        adjustments: t_adjustments,
     }
 }
 
@@ -141,7 +181,7 @@ fn decompress(
         ));
         for y in 0..transformations.height {
             for x in 0..transformations.width {
-                let transformation = transformations.transformations[y * transformations.width + x];
+                let transformation = transformations.get(x, y);
                 let src_block = reduce_block(
                     {
                         let foo = iterations[i].clone().slice_move(s![
