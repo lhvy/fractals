@@ -27,7 +27,7 @@ struct Transformations {
     x: Vec<Index>,
     y: Vec<Index>,
     is_flipped: Vec<u8>,
-    degrees: Vec<Rotation>,
+    degrees: Vec<u8>,
     adjustments: Vec<Adjustments>,
 }
 
@@ -39,7 +39,7 @@ impl Transformations {
             x: Vec::with_capacity(width * height),
             y: Vec::with_capacity(width * height),
             is_flipped: Vec::with_capacity(width * height / 8),
-            degrees: Vec::with_capacity(width * height),
+            degrees: Vec::with_capacity(width * height / 4),
             adjustments: Vec::with_capacity(width * height),
         }
     }
@@ -50,14 +50,24 @@ impl Transformations {
 
     fn get(&self, x: usize, y: usize) -> Transformation {
         let i = y * self.width + x;
+
         let byte = self.is_flipped[i / 8];
         let is_flipped = (byte >> (i % 8)) & 1 == 1;
+
+        let byte = self.degrees[i / 4];
+        let degrees = match (byte >> ((i % 4) * 2)) & 3 {
+            0 => Rotation::R0,
+            1 => Rotation::R90,
+            2 => Rotation::R180,
+            3 => Rotation::R270,
+            _ => unreachable!(),
+        };
 
         Transformation {
             x: self.x[i],
             y: self.y[i],
             is_flipped,
-            degrees: self.degrees[i],
+            degrees,
             adjustments: self.adjustments[i],
         }
     }
@@ -81,7 +91,11 @@ impl Transformations {
         } else {
             self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
         }
-        self.degrees.push(degrees);
+        if (i % 4) == 0 {
+            self.degrees.push(degrees as u8);
+        } else {
+            self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
+        }
         self.adjustments.push(adjustments);
     }
 }
@@ -95,7 +109,8 @@ struct Transformation {
     adjustments: Adjustments,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
 enum Rotation {
     R0,
     R90,
@@ -118,11 +133,9 @@ fn main() {
     let t = compress(reduce(&img, 4), 8, 4, 8);
 
     dbg!(
-        t.len()
-            * (std::mem::size_of::<Index>() * 2
-                + std::mem::size_of::<Rotation>()
-                + std::mem::size_of::<Adjustments>())
+        t.len() * (std::mem::size_of::<Index>() * 2 + std::mem::size_of::<Adjustments>())
             + t.is_flipped.len()
+            + t.degrees.len()
     );
 
     let iterations = decompress(t, 8, 4, 8);
