@@ -1,0 +1,18 @@
+[package]
+edition = "2021"
+license = "apache-2.0"
+name = "fractals"
+version = "0.1.0"
+
+[dependencies]
+image = "0.25.0"
+indicatif = "0.17.8"
+ndarray = "0.15.6"
+ndarray-linalg = { version = "0.16.0", features = ["openblas-system"] }
+rand = "0.8.5"
+
+# [profile.release]
+# lto = true
+
+[profile.dev]
+opt-level = 3
