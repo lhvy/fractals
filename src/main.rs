@@ -2,11 +2,12 @@ use image::{ImageBuffer, Luma};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_linalg::LeastSquaresSvdInto;
 use rand::Rng;
+use std::os::fd::AsRawFd;
 
 type Float = f32;
 type Index = u16;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Adjustments {
     brightness: Float,
     contrast: Float,
@@ -21,27 +22,18 @@ impl Default for Adjustments {
     }
 }
 
-struct Transformations {
+#[derive(Debug)]
+struct Transformations<'a> {
     width: usize,
     height: usize,
-    coordinate: Vec<Coordinate>,
-    is_flipped: Vec<u8>,
-    degrees: Vec<u8>,
-    adjustments: Vec<Adjustments>,
+    coordinate: &'a mut [Coordinate],
+    is_flipped: &'a mut [u8],
+    degrees: &'a mut [u8],
+    adjustments: &'a mut [Adjustments],
+    current: usize,
 }
 
-impl Transformations {
-    fn new(width: usize, height: usize) -> Self {
-        Transformations {
-            width,
-            height,
-            coordinate: Vec::with_capacity(width * height),
-            is_flipped: Vec::with_capacity(width * height / 8),
-            degrees: Vec::with_capacity(width * height / 4),
-            adjustments: Vec::with_capacity(width * height),
-        }
-    }
-
+impl Transformations<'_> {
     fn len(&self) -> usize {
         self.width * self.height
     }
@@ -82,20 +74,14 @@ impl Transformations {
             adjustments,
         }: Transformation,
     ) {
-        let i = self.coordinate.len();
+        let i = self.current;
 
-        self.coordinate.push(Coordinate { x, y });
-        if (i % 8) == 0 {
-            self.is_flipped.push(is_flipped as u8);
-        } else {
-            self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
-        }
-        if (i % 4) == 0 {
-            self.degrees.push(degrees as u8);
-        } else {
-            self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
-        }
-        self.adjustments.push(adjustments);
+        self.coordinate[i] = Coordinate { x, y };
+        self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
+        self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
+        self.adjustments[i] = adjustments;
+
+        self.current += 1;
     }
 }
 
@@ -117,19 +103,135 @@ enum Rotation {
     R270,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct Coordinate {
     x: Index,
     y: Index,
 }
 
+const FACTOR: usize = 1;
+const SRC_SIZE: usize = DEST_SIZE * 2;
+const DEST_SIZE: usize = 8;
+const STEP: usize = SRC_SIZE;
+
 fn main() {
     // Ensure image is grayscale
-    let img = image::open("monkey.gif").unwrap().to_luma8();
+    let img = image::open("fern.png").unwrap().to_luma8();
     // Crash if image is not square
-    // assert_eq!(img.width(), img.height());
+    assert_eq!(img.width(), img.height());
+
+    // Open file in W/R
+    let compressed = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open("compressed.leic")
+        .unwrap();
+    let width = img.width() as usize / FACTOR / DEST_SIZE;
+    let height = img.height() as usize / FACTOR / DEST_SIZE;
+    let len = width * height;
+
+    let header_size = std::mem::size_of::<usize>() * 2;
+    let coordinate_size = std::mem::size_of::<Coordinate>() * len;
+    let is_flipped_size = len.div_ceil(8);
+    let degrees_size = len.div_ceil(4);
+    let adjustments_size = std::mem::size_of::<Adjustments>() * len;
+    let file_len =
+        header_size + coordinate_size + is_flipped_size + degrees_size + adjustments_size;
+    compressed.set_len(file_len as u64).unwrap();
+
+    let data = unsafe {
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            file_len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            compressed.as_raw_fd(),
+            0,
+        );
+        // Error check
+        if ptr == libc::MAP_FAILED {
+            panic!("{}", *libc::__error());
+        }
+
+        std::slice::from_raw_parts_mut(ptr.cast::<u8>(), file_len)
+    };
+
+    let transformations = unsafe {
+        let mut ptr = data.as_mut_ptr().cast::<usize>();
+        *ptr = width;
+        ptr = ptr.add(1);
+        *ptr = height;
+        ptr = ptr.add(1);
+
+        let coordinate = ptr.cast::<u8>();
+        let adjustments = coordinate.add(coordinate_size);
+        let is_flipped = adjustments.add(adjustments_size);
+        let degrees = is_flipped.add(is_flipped_size);
+
+        Transformations {
+            width,
+            height,
+            coordinate: std::slice::from_raw_parts_mut(coordinate.cast(), len),
+            is_flipped: std::slice::from_raw_parts_mut(is_flipped, is_flipped_size),
+            degrees: std::slice::from_raw_parts_mut(degrees, degrees_size),
+            adjustments: std::slice::from_raw_parts_mut(adjustments.cast(), len),
+            current: 0,
+        }
+    };
+
+    dbg!(&transformations.coordinate);
 
     // Reduce and save each rotation
-    let t = compress(reduce(&img, 4), 8, 4, 8);
+    compress(
+        reduce(&img, FACTOR),
+        SRC_SIZE,
+        DEST_SIZE,
+        STEP,
+        transformations,
+    );
+    unsafe {
+        libc::msync(data.as_mut_ptr().cast(), file_len, libc::MS_SYNC);
+        libc::munmap(data.as_mut_ptr().cast(), file_len);
+    }
+    drop(compressed);
+
+    let compressed = std::fs::File::open("compressed.leic").unwrap();
+    let file_len = compressed.metadata().unwrap().len() as usize;
+    let data = unsafe {
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            file_len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            compressed.as_raw_fd(),
+            0,
+        );
+
+        std::slice::from_raw_parts_mut(ptr.cast::<u8>(), file_len)
+    };
+    let t = unsafe {
+        let mut ptr = data.as_mut_ptr().cast::<usize>();
+        let width = *ptr;
+        ptr = ptr.add(1);
+        let height = *ptr;
+        ptr = ptr.add(1);
+
+        let coordinate = ptr.cast::<u8>();
+        let adjustments = coordinate.add(coordinate_size);
+        let is_flipped = adjustments.add(adjustments_size);
+        let degrees = is_flipped.add(is_flipped_size);
+
+        Transformations {
+            width,
+            height,
+            coordinate: std::slice::from_raw_parts_mut(coordinate.cast(), len),
+            is_flipped: std::slice::from_raw_parts_mut(is_flipped, is_flipped_size),
+            degrees: std::slice::from_raw_parts_mut(degrees, degrees_size),
+            adjustments: std::slice::from_raw_parts_mut(adjustments.cast(), len),
+            current: 0,
+        }
+    };
 
     dbg!(
         t.len() * (std::mem::size_of::<Coordinate>() + std::mem::size_of::<Adjustments>())
@@ -137,7 +239,7 @@ fn main() {
             + t.degrees.len()
     );
 
-    let iterations = decompress(t, 8, 4, 8);
+    let iterations = decompress(t, SRC_SIZE, DEST_SIZE, STEP);
 
     for (i, iteration) in iterations.iter().enumerate() {
         let img = ImageBuffer::from_fn(
@@ -149,13 +251,18 @@ fn main() {
     }
 }
 
-fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) -> Transformations {
-    let (mut transformations, src_blocks) =
+fn compress(
+    m: Array2<Float>,
+    src_size: usize,
+    dest_size: usize,
+    step: usize,
+    mut result: Transformations,
+) {
+    let (transformations, src_blocks) =
         gen_all_transformations(m.clone(), src_size, dest_size, step);
 
     let width = m.ncols() / dest_size;
     let height = m.nrows() / dest_size;
-    let mut result = Transformations::new(width, height);
     let bar = indicatif::ProgressBar::new((width * height) as u64);
     for y in 0..(height) {
         for x in 0..(width) {
@@ -183,8 +290,26 @@ fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) ->
             bar.inc(1);
         }
     }
+    bar.finish();
 
-    result
+    unsafe {
+        std::alloc::dealloc(
+            transformations.coordinate.as_mut_ptr().cast(),
+            std::alloc::Layout::array::<Coordinate>(transformations.coordinate.len()).unwrap(),
+        );
+        std::alloc::dealloc(
+            transformations.is_flipped.as_mut_ptr(),
+            std::alloc::Layout::array::<u8>(transformations.is_flipped.len()).unwrap(),
+        );
+        std::alloc::dealloc(
+            transformations.degrees.as_mut_ptr(),
+            std::alloc::Layout::array::<u8>(transformations.degrees.len()).unwrap(),
+        );
+        std::alloc::dealloc(
+            transformations.adjustments.as_mut_ptr().cast(),
+            std::alloc::Layout::array::<Adjustments>(transformations.adjustments.len()).unwrap(),
+        );
+    }
 }
 
 fn decompress(
@@ -256,13 +381,45 @@ fn gen_all_transformations(
     src_size: usize,
     dest_size: usize,
     step: usize,
-) -> (Transformations, Vec<Array2<Float>>) {
+) -> (Transformations<'static>, Vec<Array2<Float>>) {
     let factor = src_size / dest_size;
     let mut blocks = Vec::new();
 
     let height = (m.nrows() - src_size) / step + 1;
     let width = (m.ncols() - src_size) / step + 1;
-    let mut transformations = Transformations::new(width, height);
+    let mut transformations: Transformations<'static> = unsafe {
+        Transformations {
+            width,
+            height,
+            coordinate: std::slice::from_raw_parts_mut(
+                std::alloc::alloc_zeroed(
+                    std::alloc::Layout::array::<Coordinate>(width * height * 2 * 4).unwrap(),
+                )
+                .cast(),
+                width * height * 2 * 4,
+            ),
+            is_flipped: std::slice::from_raw_parts_mut(
+                std::alloc::alloc_zeroed(
+                    std::alloc::Layout::array::<u8>((width * height * 2 * 4).div_ceil(8)).unwrap(),
+                ),
+                (width * height * 2 * 4).div_ceil(8),
+            ),
+            degrees: std::slice::from_raw_parts_mut(
+                std::alloc::alloc_zeroed(
+                    std::alloc::Layout::array::<u8>((width * height * 2 * 4).div_ceil(4)).unwrap(),
+                ),
+                (width * height * 2 * 4).div_ceil(4),
+            ),
+            adjustments: std::slice::from_raw_parts_mut(
+                std::alloc::alloc_zeroed(
+                    std::alloc::Layout::array::<Adjustments>(width * height * 2 * 4).unwrap(),
+                )
+                .cast(),
+                width * height * 2 * 4,
+            ),
+            current: 0,
+        }
+    };
 
     for y in 0..height {
         for x in 0..width {
