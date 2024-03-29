@@ -12,8 +12,8 @@ ndarray = "0.15.6"
 ndarray-linalg = { version = "0.16.0", features = ["openblas-system"] }
 rand = "0.8.5"
 
-# [profile.release]
-# lto = true
+[profile.release]
+lto = true
 
 [profile.dev]
 opt-level = 3
