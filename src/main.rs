@@ -26,24 +26,63 @@ struct Transformations {
     height: usize,
     x: Vec<Index>,
     y: Vec<Index>,
-    is_flipped: Vec<bool>,
+    is_flipped: Vec<u8>,
     degrees: Vec<Rotation>,
     adjustments: Vec<Adjustments>,
 }
 
 impl Transformations {
+    fn new(width: usize, height: usize) -> Self {
+        Transformations {
+            width,
+            height,
+            x: Vec::with_capacity(width * height),
+            y: Vec::with_capacity(width * height),
+            is_flipped: Vec::with_capacity(width * height / 8),
+            degrees: Vec::with_capacity(width * height),
+            adjustments: Vec::with_capacity(width * height),
+        }
+    }
+
     fn len(&self) -> usize {
         self.width * self.height
     }
 
     fn get(&self, x: usize, y: usize) -> Transformation {
+        let i = y * self.width + x;
+        let byte = self.is_flipped[i / 8];
+        let is_flipped = (byte >> (i % 8)) & 1 == 1;
+
         Transformation {
-            x: self.x[y * self.width + x],
-            y: self.y[y * self.width + x],
-            is_flipped: self.is_flipped[y * self.width + x],
-            degrees: self.degrees[y * self.width + x],
-            adjustments: self.adjustments[y * self.width + x],
+            x: self.x[i],
+            y: self.y[i],
+            is_flipped,
+            degrees: self.degrees[i],
+            adjustments: self.adjustments[i],
         }
+    }
+
+    fn push(
+        &mut self,
+        Transformation {
+            x,
+            y,
+            is_flipped,
+            degrees,
+            adjustments,
+        }: Transformation,
+    ) {
+        let i = self.x.len();
+
+        self.x.push(x);
+        self.y.push(y);
+        if (i % 8) == 0 {
+            self.is_flipped.push(is_flipped as u8);
+        } else {
+            self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
+        }
+        self.degrees.push(degrees);
+        self.adjustments.push(adjustments);
     }
 }
 
@@ -81,9 +120,9 @@ fn main() {
     dbg!(
         t.len()
             * (std::mem::size_of::<Index>() * 2
-                + std::mem::size_of::<bool>()
                 + std::mem::size_of::<Rotation>()
                 + std::mem::size_of::<Adjustments>())
+            + t.is_flipped.len()
     );
 
     let iterations = decompress(t, 8, 4, 8);
@@ -99,16 +138,11 @@ fn main() {
 }
 
 fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) -> Transformations {
-    let mut t_x = Vec::new();
-    let mut t_y = Vec::new();
-    let mut t_is_flipped = Vec::new();
-    let mut t_degrees = Vec::new();
-    let mut t_adjustments = Vec::new();
-
     let transformed_blocks = gen_all_transformations(m.clone(), src_size, dest_size, step);
 
     let width = m.ncols() / dest_size;
     let height = m.nrows() / dest_size;
+    let mut transformations = Transformations::new(width, height);
     let bar = indicatif::ProgressBar::new((width * height) as u64);
     for y in 0..(height) {
         for x in 0..(width) {
@@ -136,25 +170,12 @@ fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) ->
                     min = d;
                 }
             }
-            let min_t = min_t.unwrap();
-            t_x.push(min_t.x);
-            t_y.push(min_t.y);
-            t_is_flipped.push(min_t.is_flipped);
-            t_degrees.push(min_t.degrees);
-            t_adjustments.push(min_t.adjustments);
+            transformations.push(min_t.unwrap());
             bar.inc(1);
         }
     }
 
-    Transformations {
-        width,
-        height,
-        x: t_x,
-        y: t_y,
-        is_flipped: t_is_flipped,
-        degrees: t_degrees,
-        adjustments: t_adjustments,
-    }
+    transformations
 }
 
 fn decompress(
