@@ -7,6 +7,7 @@ use std::os::fd::AsRawFd;
 type Float = f32;
 type Index = u16;
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct Adjustments {
     brightness: Float,
@@ -94,8 +95,8 @@ struct Transformation {
     adjustments: Adjustments,
 }
 
-#[derive(Clone, Copy, Debug)]
 #[repr(u8)]
+#[derive(Clone, Copy, Debug)]
 enum Rotation {
     R0,
     R90,
@@ -103,6 +104,7 @@ enum Rotation {
     R270,
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct Coordinate {
     x: Index,
@@ -120,7 +122,6 @@ fn main() {
     // Crash if image is not square
     assert_eq!(img.width(), img.height());
 
-    // Open file in W/R
     let compressed = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -180,9 +181,6 @@ fn main() {
         }
     };
 
-    dbg!(&transformations.coordinate);
-
-    // Reduce and save each rotation
     compress(
         reduce(&img, FACTOR),
         SRC_SIZE,
@@ -233,11 +231,7 @@ fn main() {
         }
     };
 
-    dbg!(
-        t.len() * (std::mem::size_of::<Coordinate>() + std::mem::size_of::<Adjustments>())
-            + t.is_flipped.len()
-            + t.degrees.len()
-    );
+    println!("Outputted compressed file with size: {}", file_len);
 
     let iterations = decompress(t, SRC_SIZE, DEST_SIZE, STEP);
 
