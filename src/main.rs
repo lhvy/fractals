@@ -24,8 +24,7 @@ impl Default for Adjustments {
 struct Transformations {
     width: usize,
     height: usize,
-    x: Vec<Index>,
-    y: Vec<Index>,
+    coordinate: Vec<Coordinate>,
     is_flipped: Vec<u8>,
     degrees: Vec<u8>,
     adjustments: Vec<Adjustments>,
@@ -36,8 +35,7 @@ impl Transformations {
         Transformations {
             width,
             height,
-            x: Vec::with_capacity(width * height),
-            y: Vec::with_capacity(width * height),
+            coordinate: Vec::with_capacity(width * height),
             is_flipped: Vec::with_capacity(width * height / 8),
             degrees: Vec::with_capacity(width * height / 4),
             adjustments: Vec::with_capacity(width * height),
@@ -64,8 +62,8 @@ impl Transformations {
         };
 
         Transformation {
-            x: self.x[i],
-            y: self.y[i],
+            x: self.coordinate[i].x,
+            y: self.coordinate[i].y,
             is_flipped,
             degrees,
             adjustments: self.adjustments[i],
@@ -82,10 +80,9 @@ impl Transformations {
             adjustments,
         }: Transformation,
     ) {
-        let i = self.x.len();
+        let i = self.coordinate.len();
 
-        self.x.push(x);
-        self.y.push(y);
+        self.coordinate.push(Coordinate { x, y });
         if (i % 8) == 0 {
             self.is_flipped.push(is_flipped as u8);
         } else {
@@ -118,6 +115,11 @@ enum Rotation {
     R270,
 }
 
+struct Coordinate {
+    x: Index,
+    y: Index,
+}
+
 struct TransformedBlock {
     block: Array2<Float>,
     transformation: Transformation,
@@ -133,7 +135,7 @@ fn main() {
     let t = compress(reduce(&img, 4), 8, 4, 8);
 
     dbg!(
-        t.len() * (std::mem::size_of::<Index>() * 2 + std::mem::size_of::<Adjustments>())
+        t.len() * (std::mem::size_of::<Coordinate>() + std::mem::size_of::<Adjustments>())
             + t.is_flipped.len()
             + t.degrees.len()
     );
