@@ -4,6 +4,7 @@ use ndarray_linalg::LeastSquaresSvdInto;
 use rand::Rng;
 
 type Float = f32;
+type Index = u16;
 
 #[derive(Clone, Copy)]
 struct Adjustments {
@@ -28,8 +29,8 @@ struct Transformations {
 
 #[derive(Clone, Copy)]
 struct Transformation {
-    x: usize,
-    y: usize,
+    x: Index,
+    y: Index,
     is_flipped: bool,
     degrees: Rotation,
     adjustments: Adjustments,
@@ -144,8 +145,10 @@ fn decompress(
                 let src_block = reduce_block(
                     {
                         let foo = iterations[i].clone().slice_move(s![
-                            transformation.y * step..(transformation.y + 1) * src_size,
-                            transformation.x * step..(transformation.x + 1) * src_size,
+                            transformation.y as usize * step
+                                ..(transformation.y as usize + 1) * src_size,
+                            transformation.x as usize * step
+                                ..(transformation.x as usize + 1) * src_size,
                         ]);
                         Array2::from_shape_fn((src_size, src_size), |(y, x)| foo[[y, x]])
                     },
@@ -199,8 +202,8 @@ fn gen_all_transformations(
             for is_flipped in [false, true] {
                 for degrees in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
                     let t = Transformation {
-                        x,
-                        y,
+                        x: x as Index,
+                        y: y as Index,
                         is_flipped,
                         degrees,
                         adjustments: Adjustments::default(),
