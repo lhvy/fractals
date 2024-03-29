@@ -46,9 +46,7 @@ impl Transformations {
         self.width * self.height
     }
 
-    fn get(&self, x: usize, y: usize) -> Transformation {
-        let i = y * self.width + x;
-
+    fn get_index(&self, i: usize) -> Transformation {
         let byte = self.is_flipped[i / 8];
         let is_flipped = (byte >> (i % 8)) & 1 == 1;
 
@@ -68,6 +66,10 @@ impl Transformations {
             degrees,
             adjustments: self.adjustments[i],
         }
+    }
+
+    fn get(&self, x: usize, y: usize) -> Transformation {
+        self.get_index(y * self.width + x)
     }
 
     fn push(
@@ -120,11 +122,6 @@ struct Coordinate {
     y: Index,
 }
 
-struct TransformedBlock {
-    block: Array2<Float>,
-    transformation: Transformation,
-}
-
 fn main() {
     // Ensure image is grayscale
     let img = image::open("monkey.gif").unwrap().to_luma8();
@@ -153,11 +150,12 @@ fn main() {
 }
 
 fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) -> Transformations {
-    let transformed_blocks = gen_all_transformations(m.clone(), src_size, dest_size, step);
+    let (mut transformations, src_blocks) =
+        gen_all_transformations(m.clone(), src_size, dest_size, step);
 
     let width = m.ncols() / dest_size;
     let height = m.nrows() / dest_size;
-    let mut transformations = Transformations::new(width, height);
+    let mut result = Transformations::new(width, height);
     let bar = indicatif::ProgressBar::new((width * height) as u64);
     for y in 0..(height) {
         for x in 0..(width) {
@@ -169,28 +167,24 @@ fn compress(m: Array2<Float>, src_size: usize, dest_size: usize, step: usize) ->
             ]);
             let dest_block =
                 Array2::from_shape_fn((dest_size, dest_size), |(y, x)| dest_block[[y, x]]);
-            for TransformedBlock {
-                block: src_block,
-                mut transformation,
-            } in &transformed_blocks
-            {
+            for (i, src_block) in src_blocks.iter().enumerate() {
                 let adjustments = find_adjustments(src_block.clone(), dest_block.clone());
-                transformation.adjustments = adjustments;
+                transformations.adjustments[i] = adjustments;
                 let s = src_block
                     .clone()
                     .map(|&x| x * adjustments.contrast as Float + adjustments.brightness as Float);
                 let d = ((dest_block.clone() - s.clone()) * (dest_block.clone() - s.clone())).sum();
                 if d < min {
-                    min_t = Some(transformation);
+                    min_t = Some(transformations.get_index(i));
                     min = d;
                 }
             }
-            transformations.push(min_t.unwrap());
+            result.push(min_t.unwrap());
             bar.inc(1);
         }
     }
 
-    transformations
+    result
 }
 
 fn decompress(
@@ -262,12 +256,16 @@ fn gen_all_transformations(
     src_size: usize,
     dest_size: usize,
     step: usize,
-) -> Vec<TransformedBlock> {
+) -> (Transformations, Vec<Array2<Float>>) {
     let factor = src_size / dest_size;
-    let mut res = Vec::new();
+    let mut blocks = Vec::new();
 
-    for y in 0..((m.nrows() - src_size) / step + 1) {
-        for x in 0..((m.ncols() - src_size) / step + 1) {
+    let height = (m.nrows() - src_size) / step + 1;
+    let width = (m.ncols() - src_size) / step + 1;
+    let mut transformations = Transformations::new(width, height);
+
+    for y in 0..height {
+        for x in 0..width {
             let src_block = reduce_block(
                 m.clone().slice_move(s![
                     y * step..y * step + src_size,
@@ -284,16 +282,14 @@ fn gen_all_transformations(
                         degrees,
                         adjustments: Adjustments::default(),
                     };
-                    res.push(TransformedBlock {
-                        block: transform(src_block.clone(), &t),
-                        transformation: t,
-                    });
+                    blocks.push(transform(src_block.clone(), &t));
+                    transformations.push(t);
                 }
             }
         }
     }
 
-    res
+    (transformations, blocks)
 }
 
 fn reduce(img: &ImageBuffer<Luma<u8>, Vec<u8>>, factor: usize) -> Array2<Float> {
