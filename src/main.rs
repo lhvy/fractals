@@ -117,8 +117,14 @@ const DEST_SIZE: usize = 8;
 const STEP: usize = SRC_SIZE;
 
 fn main() {
+    // Get file name as first command line argument
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <file>", args[0]);
+        std::process::exit(1);
+    }
     // Ensure image is grayscale
-    let img = image::open("fern.png").unwrap().to_luma8();
+    let img = image::open(&args[1]).unwrap().to_luma8();
     // Crash if image is not square
     assert_eq!(img.width(), img.height());
 
