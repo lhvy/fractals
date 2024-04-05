@@ -35,9 +35,9 @@ struct Transformations<'a> {
 }
 
 impl Transformations<'_> {
-    fn len(&self) -> usize {
-        self.width * self.height
-    }
+    // fn len(&self) -> usize {
+    //     self.width * self.height
+    // }
 
     fn get_index(&self, i: usize) -> Transformation {
         let byte = self.is_flipped[i / 8];
