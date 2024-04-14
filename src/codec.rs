@@ -1,8 +1,114 @@
-use crate::{Adjustments, Coordinate, Float, Index, Rotation, Transformation, Transformations};
 use image::{ImageBuffer, Luma};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_linalg::LeastSquaresSvdInto;
 use rand::Rng;
+
+type Float = f32;
+type Index = u16;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Adjustments {
+    brightness: Float,
+    contrast: Float,
+}
+
+impl Default for Adjustments {
+    fn default() -> Self {
+        Adjustments {
+            brightness: 0.0,
+            contrast: 1.0,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Transformations<'a> {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) coordinate: &'a mut [Coordinate],
+    pub(crate) is_flipped: &'a mut [u8],
+    pub(crate) degrees: &'a mut [u8],
+    pub(crate) adjustments: &'a mut [Adjustments],
+    pub(crate) current: usize,
+}
+
+impl Transformations<'_> {
+    // fn len(&self) -> usize {
+    //     self.width * self.height
+    // }
+
+    fn get_index(&self, i: usize) -> Transformation {
+        let byte = self.is_flipped[i / 8];
+        let is_flipped = (byte >> (i % 8)) & 1 == 1;
+
+        let byte = self.degrees[i / 4];
+        let degrees = match (byte >> ((i % 4) * 2)) & 3 {
+            0 => Rotation::R0,
+            1 => Rotation::R90,
+            2 => Rotation::R180,
+            3 => Rotation::R270,
+            _ => unreachable!(),
+        };
+
+        Transformation {
+            x: self.coordinate[i].x,
+            y: self.coordinate[i].y,
+            is_flipped,
+            degrees,
+            adjustments: self.adjustments[i],
+        }
+    }
+
+    fn get(&self, x: usize, y: usize) -> Transformation {
+        self.get_index(y * self.width + x)
+    }
+
+    fn push(
+        &mut self,
+        Transformation {
+            x,
+            y,
+            is_flipped,
+            degrees,
+            adjustments,
+        }: Transformation,
+    ) {
+        let i = self.current;
+
+        self.coordinate[i] = Coordinate { x, y };
+        self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
+        self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
+        self.adjustments[i] = adjustments;
+
+        self.current += 1;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Transformation {
+    x: Index,
+    y: Index,
+    is_flipped: bool,
+    degrees: Rotation,
+    adjustments: Adjustments,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+enum Rotation {
+    R0,
+    R90,
+    R180,
+    R270,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Coordinate {
+    x: Index,
+    y: Index,
+}
 
 pub(crate) fn compress(
     m: Array2<Float>,
