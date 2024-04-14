@@ -11,7 +11,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 const FACTOR: usize = 1;
 const SRC_SIZE: usize = DEST_SIZE * 2;
-const DEST_SIZE: usize = 8;
+const DEST_SIZE: usize = 4;
 const STEP: usize = SRC_SIZE;
 
 fn main() {

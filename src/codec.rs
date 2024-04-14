@@ -7,19 +7,38 @@ use rayon::prelude::*;
 type Float = f32;
 type Index = u16;
 
+const BRIGHTNESS_CLAMP: Float = 1000.0;
+const CONTRAST_CLAMP: f32 = 2.5;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Adjustments {
-    brightness: Float,
-    contrast: Float,
+    brightness_raw: i8,
+    contrast_raw: i8,
+}
+
+impl Adjustments {
+    fn new(brightness: Float, contrast: Float) -> Self {
+        let brightness = brightness.clamp(-BRIGHTNESS_CLAMP, BRIGHTNESS_CLAMP);
+        let contrast = contrast.clamp(-CONTRAST_CLAMP, CONTRAST_CLAMP);
+        Self {
+            brightness_raw: (brightness / BRIGHTNESS_CLAMP * 127.0).round() as i8,
+            contrast_raw: (contrast / CONTRAST_CLAMP * 127.0).round() as i8,
+        }
+    }
+
+    fn brightness(&self) -> Float {
+        self.brightness_raw as Float / 127.0 * BRIGHTNESS_CLAMP
+    }
+
+    fn contrast(&self) -> Float {
+        self.contrast_raw as Float / 127.0 * CONTRAST_CLAMP
+    }
 }
 
 impl Default for Adjustments {
     fn default() -> Self {
-        Adjustments {
-            brightness: 0.0,
-            contrast: 1.0,
-        }
+        Self::new(0.0, 1.0)
     }
 }
 
@@ -143,7 +162,7 @@ pub(crate) fn compress(
                 let adjustments = find_adjustments(src_block.clone(), dest_block.clone());
                 let s = src_block
                     .clone()
-                    .map(|&x| x * adjustments.contrast as Float + adjustments.brightness as Float);
+                    .map(|&x| x * adjustments.contrast() + adjustments.brightness());
                 let d = ((dest_block.clone() - s.clone()) * (dest_block.clone() - s.clone())).sum();
                 if d < min {
                     let mut t = transformations.get_index(i);
@@ -236,10 +255,7 @@ fn find_adjustments(src: Array2<Float>, dest: Array2<Float>) -> Adjustments {
     let b: Array1<Float> = dest.clone().into_shape(dest.len()).unwrap();
     let x = a.least_squares_into(b).unwrap();
 
-    Adjustments {
-        contrast: x.solution[1],
-        brightness: x.solution[0],
-    }
+    Adjustments::new(x.solution[0], x.solution[1])
 }
 
 fn gen_all_transformations(
@@ -382,5 +398,5 @@ fn transform(m: Array2<Float>, transformation: &Transformation) -> Array2<Float>
         ..
     } = *transformation;
 
-    adjustments.contrast * rotate(flip(m, is_flipped), degrees) + adjustments.brightness
+    adjustments.contrast() * rotate(flip(m, is_flipped), degrees) + adjustments.brightness()
 }
