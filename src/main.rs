@@ -2,8 +2,9 @@ mod codec;
 
 use codec::{Adjustments, Coordinate, Transformations};
 use image::{ImageBuffer, Luma};
+use lzma::EXTREME_PRESET;
 use mimalloc::MiMalloc;
-use std::os::fd::AsRawFd;
+use std::io::{Read, Write};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -38,11 +39,11 @@ fn main() {
     compress(img, &compressed);
     drop(compressed);
 
-    let compressed = std::fs::File::open("output/compressed.leic").unwrap();
-    decompress(compressed);
+    let mut compressed = std::fs::File::open("output/compressed.leic").unwrap();
+    decompress(&mut compressed);
 }
 
-fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, compressed: &std::fs::File) {
+fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, mut compressed: &std::fs::File) {
     let width = img.width() as usize / FACTOR / DEST_SIZE;
     let height = img.height() as usize / FACTOR / DEST_SIZE;
     let len = width * height;
@@ -54,23 +55,12 @@ fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, compressed: &std::fs::File) {
     let adjustments_size = std::mem::size_of::<Adjustments>() * len;
     let file_len =
         header_size + coordinate_size + is_flipped_size + degrees_size + adjustments_size;
-    compressed.set_len(file_len as u64).unwrap();
 
     let data = unsafe {
-        let ptr = libc::mmap(
-            std::ptr::null_mut(),
+        std::slice::from_raw_parts_mut(
+            std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(file_len, 8).unwrap()),
             file_len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            compressed.as_raw_fd(),
-            0,
-        );
-        // Error check
-        if ptr == libc::MAP_FAILED {
-            panic!("{}", *libc::__error());
-        }
-
-        std::slice::from_raw_parts_mut(ptr.cast::<u8>(), file_len)
+        )
     };
 
     let transformations = unsafe {
@@ -103,26 +93,30 @@ fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, compressed: &std::fs::File) {
         STEP,
         transformations,
     );
+
+    compressed
+        .write_all(lzma::compress(data, 9 | EXTREME_PRESET).unwrap().as_slice())
+        .unwrap();
     unsafe {
-        libc::msync(data.as_mut_ptr().cast(), file_len, libc::MS_SYNC);
-        libc::munmap(data.as_mut_ptr().cast(), file_len);
+        std::alloc::dealloc(
+            data.as_mut_ptr(),
+            std::alloc::Layout::from_size_align(file_len, 8).unwrap(),
+        );
     }
 }
 
-fn decompress(compressed: std::fs::File) {
+fn decompress(compressed: &mut std::fs::File) {
     let file_len = compressed.metadata().unwrap().len() as usize;
-    let data = unsafe {
-        let ptr = libc::mmap(
-            std::ptr::null_mut(),
-            file_len,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE,
-            compressed.as_raw_fd(),
-            0,
-        );
+    let mut data = Vec::new();
+    compressed.read_to_end(&mut data).unwrap();
+    let mut data = lzma::decompress(&data).unwrap();
 
-        std::slice::from_raw_parts_mut(ptr.cast::<u8>(), file_len)
-    };
+    println!("lzma + fractal compressed file with size: {:>9}", file_len);
+    println!(
+        "       fractal compressed file with size: {:>9}",
+        data.len()
+    );
+
     let t = unsafe {
         let mut ptr = data.as_mut_ptr().cast::<usize>();
         let width = *ptr;
@@ -151,8 +145,6 @@ fn decompress(compressed: std::fs::File) {
             current: 0,
         }
     };
-
-    println!("Outputted compressed file with size: {}", file_len);
 
     let iterations = codec::decompress(t, SRC_SIZE, DEST_SIZE, STEP);
 
