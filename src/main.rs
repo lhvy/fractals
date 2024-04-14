@@ -132,8 +132,73 @@ fn main() {
         .read(true)
         .write(true)
         .create(true)
-        .open("compressed.leic")
+        .open("output/compressed.leic")
         .unwrap();
+    compress_2(img, &compressed);
+    drop(compressed);
+
+    let compressed = std::fs::File::open("output/compressed.leic").unwrap();
+    decompress_2(compressed);
+}
+
+fn decompress_2(compressed: std::fs::File) {
+    let file_len = compressed.metadata().unwrap().len() as usize;
+    let data = unsafe {
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            file_len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            compressed.as_raw_fd(),
+            0,
+        );
+
+        std::slice::from_raw_parts_mut(ptr.cast::<u8>(), file_len)
+    };
+    let t = unsafe {
+        let mut ptr = data.as_mut_ptr().cast::<usize>();
+        let width = *ptr;
+        ptr = ptr.add(1);
+        let height = *ptr;
+        ptr = ptr.add(1);
+
+        let len = width * height;
+        let coordinate_size = std::mem::size_of::<Coordinate>() * len;
+        let is_flipped_size = len.div_ceil(8);
+        let degrees_size = len.div_ceil(4);
+        let adjustments_size = std::mem::size_of::<Adjustments>() * len;
+
+        let coordinate = ptr.cast::<u8>();
+        let adjustments = coordinate.add(coordinate_size);
+        let is_flipped = adjustments.add(adjustments_size);
+        let degrees = is_flipped.add(is_flipped_size);
+
+        Transformations {
+            width,
+            height,
+            coordinate: std::slice::from_raw_parts_mut(coordinate.cast(), len),
+            is_flipped: std::slice::from_raw_parts_mut(is_flipped, is_flipped_size),
+            degrees: std::slice::from_raw_parts_mut(degrees, degrees_size),
+            adjustments: std::slice::from_raw_parts_mut(adjustments.cast(), len),
+            current: 0,
+        }
+    };
+
+    println!("Outputted compressed file with size: {}", file_len);
+
+    let iterations = decompress(t, SRC_SIZE, DEST_SIZE, STEP);
+
+    for (i, iteration) in iterations.iter().enumerate() {
+        let img = ImageBuffer::from_fn(
+            iteration.nrows() as u32,
+            iteration.ncols() as u32,
+            |x, y| Luma([iteration[[y as usize, x as usize]] as u8]),
+        );
+        img.save(format!("output/output-{}.jpg", i)).unwrap();
+    }
+}
+
+fn compress_2(img: ImageBuffer<Luma<u8>, Vec<u8>>, compressed: &std::fs::File) {
     let width = img.width() as usize / FACTOR / DEST_SIZE;
     let height = img.height() as usize / FACTOR / DEST_SIZE;
     let len = width * height;
@@ -197,57 +262,6 @@ fn main() {
     unsafe {
         libc::msync(data.as_mut_ptr().cast(), file_len, libc::MS_SYNC);
         libc::munmap(data.as_mut_ptr().cast(), file_len);
-    }
-    drop(compressed);
-
-    let compressed = std::fs::File::open("compressed.leic").unwrap();
-    let file_len = compressed.metadata().unwrap().len() as usize;
-    let data = unsafe {
-        let ptr = libc::mmap(
-            std::ptr::null_mut(),
-            file_len,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE,
-            compressed.as_raw_fd(),
-            0,
-        );
-
-        std::slice::from_raw_parts_mut(ptr.cast::<u8>(), file_len)
-    };
-    let t = unsafe {
-        let mut ptr = data.as_mut_ptr().cast::<usize>();
-        let width = *ptr;
-        ptr = ptr.add(1);
-        let height = *ptr;
-        ptr = ptr.add(1);
-
-        let coordinate = ptr.cast::<u8>();
-        let adjustments = coordinate.add(coordinate_size);
-        let is_flipped = adjustments.add(adjustments_size);
-        let degrees = is_flipped.add(is_flipped_size);
-
-        Transformations {
-            width,
-            height,
-            coordinate: std::slice::from_raw_parts_mut(coordinate.cast(), len),
-            is_flipped: std::slice::from_raw_parts_mut(is_flipped, is_flipped_size),
-            degrees: std::slice::from_raw_parts_mut(degrees, degrees_size),
-            adjustments: std::slice::from_raw_parts_mut(adjustments.cast(), len),
-            current: 0,
-        }
-    };
-
-    println!("Outputted compressed file with size: {}", file_len);
-
-    let iterations = decompress(t, SRC_SIZE, DEST_SIZE, STEP);
-
-    for (i, iteration) in iterations.iter().enumerate() {
-        let img = ImageBuffer::from_fn(
-            iteration.nrows() as u32,
-            iteration.ncols() as u32,
-            |x, y| Luma([iteration[[y as usize, x as usize]] as u8]),
-        );
-        img.save(format!("output-{}.jpg", i)).unwrap();
     }
 }
 
