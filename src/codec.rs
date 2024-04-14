@@ -2,6 +2,7 @@ use image::{ImageBuffer, Luma};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_linalg::LeastSquaresSvdInto;
 use rand::Rng;
+use rayon::prelude::*;
 
 type Float = f32;
 type Index = u16;
@@ -64,23 +65,27 @@ impl Transformations<'_> {
         self.get_index(y * self.width + x)
     }
 
-    fn push(
+    fn insert(
         &mut self,
         Transformation {
-            x,
-            y,
+            x: tx,
+            y: ty,
             is_flipped,
             degrees,
             adjustments,
         }: Transformation,
+        x: usize,
+        y: usize,
     ) {
-        let i = self.current;
-
-        self.coordinate[i] = Coordinate { x, y };
+        let i = y * self.width + x;
+        self.coordinate[i] = Coordinate { x: tx, y: ty };
         self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
         self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
         self.adjustments[i] = adjustments;
+    }
 
+    fn push(&mut self, t: Transformation) {
+        self.insert(t, self.current % self.width, self.current / self.width);
         self.current += 1;
     }
 }
@@ -115,7 +120,7 @@ pub(crate) fn compress(
     src_size: usize,
     dest_size: usize,
     step: usize,
-    mut result: Transformations,
+    result: Transformations,
 ) {
     let (transformations, src_blocks) =
         gen_all_transformations(m.clone(), src_size, dest_size, step);
@@ -123,7 +128,8 @@ pub(crate) fn compress(
     let width = m.ncols() / dest_size;
     let height = m.nrows() / dest_size;
     let bar = indicatif::ProgressBar::new((width * height) as u64);
-    for y in 0..(height) {
+    let mutex = parking_lot::Mutex::new(result);
+    (0..(height)).into_par_iter().for_each(|y| {
         for x in 0..(width) {
             let mut min = Float::INFINITY;
             let mut min_t = None;
@@ -135,20 +141,21 @@ pub(crate) fn compress(
                 Array2::from_shape_fn((dest_size, dest_size), |(y, x)| dest_block[[y, x]]);
             for (i, src_block) in src_blocks.iter().enumerate() {
                 let adjustments = find_adjustments(src_block.clone(), dest_block.clone());
-                transformations.adjustments[i] = adjustments;
                 let s = src_block
                     .clone()
                     .map(|&x| x * adjustments.contrast as Float + adjustments.brightness as Float);
                 let d = ((dest_block.clone() - s.clone()) * (dest_block.clone() - s.clone())).sum();
                 if d < min {
-                    min_t = Some(transformations.get_index(i));
+                    let mut t = transformations.get_index(i);
+                    t.adjustments = adjustments;
+                    min_t = Some(t);
                     min = d;
                 }
             }
-            result.push(min_t.unwrap());
+            mutex.lock().insert(min_t.unwrap(), x, y);
             bar.inc(1);
         }
-    }
+    });
     bar.finish();
 
     unsafe {

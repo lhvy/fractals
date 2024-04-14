@@ -2,7 +2,11 @@ mod codec;
 
 use codec::{Adjustments, Coordinate, Transformations};
 use image::{ImageBuffer, Luma};
+use mimalloc::MiMalloc;
 use std::os::fd::AsRawFd;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 const FACTOR: usize = 1;
 const SRC_SIZE: usize = DEST_SIZE * 2;
@@ -20,6 +24,10 @@ fn main() {
     let img = image::open(&args[1]).unwrap().to_luma8();
     // Crash if image is not square
     assert_eq!(img.width(), img.height());
+
+    // Erase contents of output directory
+    std::fs::remove_dir_all("output").unwrap();
+    std::fs::create_dir("output").unwrap();
 
     let compressed = std::fs::OpenOptions::new()
         .read(true)
