@@ -4,7 +4,7 @@ use ndarray_linalg::LeastSquaresSvdInto;
 use rand::Rng;
 use rayon::prelude::*;
 
-type Float = f32;
+pub(crate) type Float = f32;
 type Index = u16;
 
 const BRIGHTNESS_CLAMP: Float = 1000.0;

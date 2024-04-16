@@ -1,4 +1,5 @@
 mod codec;
+mod quadtree;
 
 use codec::{Adjustments, Coordinate, Transformations};
 use image::{ImageBuffer, Luma};
@@ -21,6 +22,13 @@ fn main() {
         eprintln!("Usage: {} <file>", args[0]);
         std::process::exit(1);
     }
+
+    // Open image as RGB
+    // let img = image::open(&args[1]).unwrap().to_rgb8();
+    // let storage = quadtree::Storage::new(img);
+    // let mut quadtree = quadtree::Quadtree::new(&storage);
+    // quadtree.build(&storage);
+
     // Ensure image is grayscale
     let img = image::open(&args[1]).unwrap().to_luma8();
     // Crash if image is not square
