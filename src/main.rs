@@ -13,7 +13,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 const FACTOR: usize = 1;
 const SRC_SIZE: usize = DEST_SIZE * 2;
 const DEST_SIZE: usize = 4;
-const STEP: usize = SRC_SIZE;
 
 fn main() {
     // Get file name as first command line argument
@@ -98,7 +97,6 @@ fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, mut compressed: &std::fs::File)
         codec::reduce(&img, FACTOR),
         SRC_SIZE,
         DEST_SIZE,
-        STEP,
         transformations,
     );
 
@@ -154,7 +152,7 @@ fn decompress(compressed: &mut std::fs::File) {
         }
     };
 
-    let iterations = codec::decompress(t, SRC_SIZE, DEST_SIZE, STEP);
+    let iterations = codec::decompress(t, SRC_SIZE, DEST_SIZE);
 
     for (i, iteration) in iterations.iter().enumerate() {
         let img = ImageBuffer::from_fn(

@@ -138,11 +138,9 @@ pub(crate) fn compress(
     m: Array2<Float>,
     src_size: usize,
     dest_size: usize,
-    step: usize,
     result: Transformations,
 ) {
-    let (transformations, src_blocks) =
-        gen_all_transformations(m.clone(), src_size, dest_size, step);
+    let (transformations, src_blocks) = gen_all_transformations(m.clone(), src_size, dest_size);
 
     let width = m.ncols() / dest_size;
     let height = m.nrows() / dest_size;
@@ -201,7 +199,6 @@ pub(crate) fn decompress(
     transformations: Transformations,
     src_size: usize,
     dest_size: usize,
-    step: usize,
 ) -> Vec<Array2<Float>> {
     let mut rng = rand::thread_rng();
     let factor = src_size / dest_size;
@@ -225,9 +222,9 @@ pub(crate) fn decompress(
                 let src_block = reduce_block(
                     {
                         let foo = iterations[i].clone().slice_move(s![
-                            transformation.y as usize * step
+                            transformation.y as usize * src_size
                                 ..(transformation.y as usize + 1) * src_size,
-                            transformation.x as usize * step
+                            transformation.x as usize * src_size
                                 ..(transformation.x as usize + 1) * src_size,
                         ]);
                         Array2::from_shape_fn((src_size, src_size), |(y, x)| foo[[y, x]])
@@ -262,13 +259,12 @@ fn gen_all_transformations(
     m: Array2<Float>,
     src_size: usize,
     dest_size: usize,
-    step: usize,
 ) -> (Transformations<'static>, Vec<Array2<Float>>) {
     let factor = src_size / dest_size;
     let mut blocks = Vec::new();
 
-    let height = (m.nrows() - src_size) / step + 1;
-    let width = (m.ncols() - src_size) / step + 1;
+    let height = m.nrows() / src_size;
+    let width = m.ncols() / src_size;
     let mut transformations: Transformations<'static> = unsafe {
         Transformations {
             width,
@@ -307,8 +303,8 @@ fn gen_all_transformations(
         for x in 0..width {
             let src_block = reduce_block(
                 m.clone().slice_move(s![
-                    y * step..y * step + src_size,
-                    x * step..x * step + src_size
+                    y * src_size..(y + 1) * src_size,
+                    x * src_size..(x + 1) * src_size
                 ]),
                 factor,
             );
