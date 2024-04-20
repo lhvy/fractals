@@ -1,3 +1,6 @@
+mod transformations_cache;
+
+use crate::quadtree::Quadrant;
 use image::{ImageBuffer, Luma};
 use ndarray::{s, Array1, Array2, Axis};
 use ndarray_linalg::LeastSquaresSvdInto;
@@ -5,16 +8,70 @@ use rand::Rng;
 use rayon::prelude::*;
 
 pub(crate) type Float = f32;
-type Index = u16;
+pub(crate) type Index = u16;
 
 const BRIGHTNESS_CLAMP: Float = 1000.0;
 const CONTRAST_CLAMP: f32 = 2.5;
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Header {
+    pub(crate) len: u32,
+    pub(crate) width: Index,
+    pub(crate) height: Index,
+}
+
+impl Header {
+    pub(crate) fn new(width: Index, height: Index, len: u32) -> Self {
+        Self { width, height, len }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Transformations<'a> {
+    pub(crate) header: Header,
+    pub(crate) src_coordinate: &'a mut [Coordinate],
+    pub(crate) dest_coordinate: &'a mut [Coordinate],
+    pub(crate) scale: &'a mut [u8],
+    pub(crate) is_flipped: &'a mut [u8],
+    pub(crate) degrees: &'a mut [u8],
+    pub(crate) adjustments: &'a mut [Adjustments],
+    pub(crate) current: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Transformation {
+    src_x: Index,
+    src_y: Index,
+    dest_x: Index,
+    dest_y: Index,
+    scale: u8,
+    is_flipped: bool,
+    degrees: Rotation,
+    adjustments: Adjustments,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+enum Rotation {
+    R0,
+    R90,
+    R180,
+    R270,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Adjustments {
     brightness_raw: i8,
     contrast_raw: i8,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Coordinate {
+    x: Index,
+    y: Index,
 }
 
 impl Adjustments {
@@ -42,17 +99,6 @@ impl Default for Adjustments {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct Transformations<'a> {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
-    pub(crate) coordinate: &'a mut [Coordinate],
-    pub(crate) is_flipped: &'a mut [u8],
-    pub(crate) degrees: &'a mut [u8],
-    pub(crate) adjustments: &'a mut [Adjustments],
-    pub(crate) current: usize,
-}
-
 impl Transformations<'_> {
     // fn len(&self) -> usize {
     //     self.width * self.height
@@ -72,177 +118,171 @@ impl Transformations<'_> {
         };
 
         Transformation {
-            x: self.coordinate[i].x,
-            y: self.coordinate[i].y,
+            src_x: self.src_coordinate[i].x,
+            src_y: self.src_coordinate[i].y,
+            dest_x: self.dest_coordinate[i].x,
+            dest_y: self.dest_coordinate[i].y,
+            scale: self.scale[i],
             is_flipped,
             degrees,
             adjustments: self.adjustments[i],
         }
     }
 
-    fn get(&self, x: usize, y: usize) -> Transformation {
-        self.get_index(y * self.width + x)
-    }
-
-    fn insert(
+    fn push(
         &mut self,
         Transformation {
-            x: tx,
-            y: ty,
+            src_x,
+            src_y,
+            dest_x,
+            dest_y,
+            scale,
             is_flipped,
             degrees,
             adjustments,
         }: Transformation,
-        x: usize,
-        y: usize,
     ) {
-        let i = y * self.width + x;
-        self.coordinate[i] = Coordinate { x: tx, y: ty };
+        let i = self.current;
+        self.src_coordinate[i] = Coordinate { x: src_x, y: src_y };
+        self.dest_coordinate[i] = Coordinate {
+            x: dest_x,
+            y: dest_y,
+        };
+        self.scale[i] = scale;
         self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
         self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
         self.adjustments[i] = adjustments;
-    }
-
-    fn push(&mut self, t: Transformation) {
-        self.insert(t, self.current % self.width, self.current / self.width);
         self.current += 1;
     }
 }
 
-#[derive(Clone, Copy)]
-struct Transformation {
-    x: Index,
-    y: Index,
-    is_flipped: bool,
-    degrees: Rotation,
-    adjustments: Adjustments,
-}
+pub(crate) fn compress(m: Array2<Float>, leaves: &[Quadrant], result: Transformations) {
+    let mut cache = transformations_cache::Cache::default();
+    for l in leaves {
+        cache.get(&m, l.depth as u8);
+    }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug)]
-enum Rotation {
-    R0,
-    R90,
-    R180,
-    R270,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Coordinate {
-    x: Index,
-    y: Index,
-}
-
-pub(crate) fn compress(
-    m: Array2<Float>,
-    src_size: usize,
-    dest_size: usize,
-    result: Transformations,
-) {
-    let (transformations, src_blocks) = gen_all_transformations(m.clone(), src_size, dest_size);
-
-    let width = m.ncols() / dest_size;
-    let height = m.nrows() / dest_size;
-    let bar = indicatif::ProgressBar::new((width * height) as u64);
-    let mutex = parking_lot::Mutex::new(result);
-    (0..(height)).into_par_iter().for_each(|y| {
-        for x in 0..(width) {
-            let mut min = Float::INFINITY;
-            let mut min_t = None;
-            let dest_block = m.clone().slice_move(s![
-                y * dest_size..(y + 1) * dest_size,
-                x * dest_size..(x + 1) * dest_size
-            ]);
-            let dest_block =
-                Array2::from_shape_fn((dest_size, dest_size), |(y, x)| dest_block[[y, x]]);
-            for (i, src_block) in src_blocks.iter().enumerate() {
-                let adjustments = find_adjustments(src_block.clone(), dest_block.clone());
-                let s = src_block
-                    .clone()
-                    .map(|&x| x * adjustments.contrast() + adjustments.brightness());
-                let d = ((dest_block.clone() - s.clone()) * (dest_block.clone() - s.clone())).sum();
-                if d < min {
-                    let mut t = transformations.get_index(i);
-                    t.adjustments = adjustments;
-                    min_t = Some(t);
-                    min = d;
+    let bar = indicatif::ProgressBar::new(leaves.len() as u64);
+    let result_mutex = parking_lot::Mutex::new(result);
+    let chunk_count = std::thread::available_parallelism().unwrap().get() * 3;
+    leaves
+        .par_chunks(leaves.len() / chunk_count)
+        .for_each(|dest_quadrants| {
+            for dest_quadrant in dest_quadrants {
+                let mut min = Float::INFINITY;
+                let mut min_t = None;
+                let dest_block =
+                    Array2::from_shape_fn((dest_quadrant.height, dest_quadrant.width), |(y, x)| {
+                        m[[dest_quadrant.y + y, dest_quadrant.x + x]]
+                    });
+                let slot = cache.map.get(&(dest_quadrant.depth as u8)).unwrap();
+                for (i, src_block) in slot.src_blocks.iter().enumerate() {
+                    let adjustments = find_adjustments(src_block.clone(), dest_block.clone());
+                    let s = src_block
+                        .clone()
+                        .map(|&x| x * adjustments.contrast() + adjustments.brightness());
+                    let d =
+                        ((dest_block.clone() - s.clone()) * (dest_block.clone() - s.clone())).sum();
+                    if d < min {
+                        let mut t = slot.transformations.get_index(i);
+                        // skip if dest in src
+                        if t.src_x as usize <= dest_quadrant.x
+                            && t.src_y as usize <= dest_quadrant.y
+                            && t.src_x as usize + t.scale as usize
+                                >= dest_quadrant.x + dest_quadrant.width
+                            && t.src_y as usize + t.scale as usize
+                                >= dest_quadrant.y + dest_quadrant.height
+                        {
+                            continue;
+                        }
+                        t.adjustments = adjustments;
+                        t.dest_x = dest_quadrant.x as u16;
+                        t.dest_y = dest_quadrant.y as u16;
+                        min_t = Some(t);
+                        min = d;
+                    }
                 }
+                result_mutex.lock().push(min_t.unwrap());
+                bar.inc(1);
             }
-            mutex.lock().insert(min_t.unwrap(), x, y);
-            bar.inc(1);
-        }
-    });
+        });
     bar.finish();
 
-    unsafe {
-        std::alloc::dealloc(
-            transformations.coordinate.as_mut_ptr().cast(),
-            std::alloc::Layout::array::<Coordinate>(transformations.coordinate.len()).unwrap(),
-        );
-        std::alloc::dealloc(
-            transformations.is_flipped.as_mut_ptr(),
-            std::alloc::Layout::array::<u8>(transformations.is_flipped.len()).unwrap(),
-        );
-        std::alloc::dealloc(
-            transformations.degrees.as_mut_ptr(),
-            std::alloc::Layout::array::<u8>(transformations.degrees.len()).unwrap(),
-        );
-        std::alloc::dealloc(
-            transformations.adjustments.as_mut_ptr().cast(),
-            std::alloc::Layout::array::<Adjustments>(transformations.adjustments.len()).unwrap(),
-        );
-    }
+    // unsafe {
+    //     std::alloc::dealloc(
+    //         transformations.coordinate.as_mut_ptr().cast(),
+    //         std::alloc::Layout::array::<Coordinate>(transformations.coordinate.len()).unwrap(),
+    //     );
+    //     std::alloc::dealloc(
+    //         transformations.is_flipped.as_mut_ptr(),
+    //         std::alloc::Layout::array::<u8>(transformations.is_flipped.len()).unwrap(),
+    //     );
+    //     std::alloc::dealloc(
+    //         transformations.degrees.as_mut_ptr(),
+    //         std::alloc::Layout::array::<u8>(transformations.degrees.len()).unwrap(),
+    //     );
+    //     std::alloc::dealloc(
+    //         transformations.adjustments.as_mut_ptr().cast(),
+    //         std::alloc::Layout::array::<Adjustments>(transformations.adjustments.len()).unwrap(),
+    //     );
+    // }
 }
 
-pub(crate) fn decompress(
-    transformations: Transformations,
-    src_size: usize,
-    dest_size: usize,
-) -> Vec<Array2<Float>> {
+pub(crate) fn decompress(transformations: Transformations) -> Vec<Array2<Float>> {
     let mut rng = rand::thread_rng();
-    let factor = src_size / dest_size;
     let mut iterations = Vec::new();
     iterations.push(Array2::from_shape_fn(
         (
-            transformations.height * dest_size,
-            transformations.width * dest_size,
+            transformations.header.height as usize,
+            transformations.header.width as usize,
         ),
         |(_, _)| rng.gen_range(0..256) as Float,
     ));
+    dbg!(&transformations.header);
 
     for i in 0..8 {
         let mut next = Array2::zeros((
-            transformations.height * dest_size,
-            transformations.width * dest_size,
+            transformations.header.height as usize,
+            transformations.header.width as usize,
         ));
-        for y in 0..transformations.height {
-            for x in 0..transformations.width {
-                let transformation = transformations.get(x, y);
-                let src_block = reduce_block(
-                    {
-                        let foo = iterations[i].clone().slice_move(s![
-                            transformation.y as usize * src_size
-                                ..(transformation.y as usize + 1) * src_size,
-                            transformation.x as usize * src_size
-                                ..(transformation.x as usize + 1) * src_size,
-                        ]);
-                        Array2::from_shape_fn((src_size, src_size), |(y, x)| foo[[y, x]])
-                    },
-                    factor,
-                );
-                let dest_block = transform(src_block, &transformation);
-                next.slice_mut(s![
-                    y * dest_size..(y + 1) * dest_size,
-                    x * dest_size..(x + 1) * dest_size,
-                ])
-                .assign(&dest_block);
-            }
+        for t in 0..transformations.dest_coordinate.len() {
+            let transformation = transformations.get_index(t);
+            let src_width = transformations.header.width as usize
+                / 2_usize.pow(transformation.scale as u32 - 1);
+            let src_height = transformations.header.height as usize
+                / 2_usize.pow(transformation.scale as u32 - 1);
+            let src_block = reduce_block(
+                {
+                    let foo = iterations[i as usize].clone().slice_move(s![
+                        transformation.src_y as usize..transformation.src_y as usize + src_height,
+                        transformation.src_x as usize..transformation.src_x as usize + src_width,
+                    ]);
+                    Array2::from_shape_fn((src_height, src_width), |(y, x)| foo[[y, x]])
+                },
+                2,
+            );
+            let dest_block = transform(src_block, &transformation);
+            let dest_width =
+                transformations.header.width as usize / 2_usize.pow(transformation.scale as u32);
+            let dest_height =
+                transformations.header.height as usize / 2_usize.pow(transformation.scale as u32);
+            next.slice_mut(s![
+                transformation.dest_y as usize..transformation.dest_y as usize + dest_height,
+                transformation.dest_x as usize..transformation.dest_x as usize + dest_width,
+            ])
+            .assign(&dest_block);
         }
         iterations.push(next);
     }
 
     iterations
+}
+
+fn find_adjustments_simple(src: Array2<Float>, dest: Array2<Float>) -> Adjustments {
+    let contrast = 0.75;
+    let temp = &dest - contrast * src;
+    let brightness = temp.sum() as Float / dest.len() as Float;
+    Adjustments::new(brightness, contrast)
 }
 
 fn find_adjustments(src: Array2<Float>, dest: Array2<Float>) -> Adjustments {
@@ -253,78 +293,6 @@ fn find_adjustments(src: Array2<Float>, dest: Array2<Float>) -> Adjustments {
     let x = a.least_squares_into(b).unwrap();
 
     Adjustments::new(x.solution[0], x.solution[1])
-}
-
-fn gen_all_transformations(
-    m: Array2<Float>,
-    src_size: usize,
-    dest_size: usize,
-) -> (Transformations<'static>, Vec<Array2<Float>>) {
-    let factor = src_size / dest_size;
-    let mut blocks = Vec::new();
-
-    let height = m.nrows() / src_size;
-    let width = m.ncols() / src_size;
-    let mut transformations: Transformations<'static> = unsafe {
-        Transformations {
-            width,
-            height,
-            coordinate: std::slice::from_raw_parts_mut(
-                std::alloc::alloc_zeroed(
-                    std::alloc::Layout::array::<Coordinate>(width * height * 2 * 4).unwrap(),
-                )
-                .cast(),
-                width * height * 2 * 4,
-            ),
-            is_flipped: std::slice::from_raw_parts_mut(
-                std::alloc::alloc_zeroed(
-                    std::alloc::Layout::array::<u8>((width * height * 2 * 4).div_ceil(8)).unwrap(),
-                ),
-                (width * height * 2 * 4).div_ceil(8),
-            ),
-            degrees: std::slice::from_raw_parts_mut(
-                std::alloc::alloc_zeroed(
-                    std::alloc::Layout::array::<u8>((width * height * 2 * 4).div_ceil(4)).unwrap(),
-                ),
-                (width * height * 2 * 4).div_ceil(4),
-            ),
-            adjustments: std::slice::from_raw_parts_mut(
-                std::alloc::alloc_zeroed(
-                    std::alloc::Layout::array::<Adjustments>(width * height * 2 * 4).unwrap(),
-                )
-                .cast(),
-                width * height * 2 * 4,
-            ),
-            current: 0,
-        }
-    };
-
-    for y in 0..height {
-        for x in 0..width {
-            let src_block = reduce_block(
-                m.clone().slice_move(s![
-                    y * src_size..(y + 1) * src_size,
-                    x * src_size..(x + 1) * src_size
-                ]),
-                factor,
-            );
-            for is_flipped in [false, true] {
-                for degrees in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
-                    let t = Transformation {
-                        x: x as Index,
-                        y: y as Index,
-                        is_flipped,
-                        degrees,
-                        adjustments: Adjustments::default(),
-                    };
-                    blocks.push(transform(src_block.clone(), &t));
-                    transformations.push(t);
-                }
-            }
-        }
-    }
-
-    (transformations, blocks)
 }
 
 pub(crate) fn reduce(img: &ImageBuffer<Luma<u8>, Vec<u8>>, factor: usize) -> Array2<Float> {

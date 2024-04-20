@@ -1,7 +1,8 @@
 use image::{ImageBuffer, Rgb};
 use ndarray::{s, Array2, ArrayView2};
 
-const MAX_DEPTH: usize = 8;
+const MIN_DEPTH: usize = 1;
+const MAX_DEPTH: usize = 6;
 const DETAIL_THRESHOLD: f32 = 5.0;
 
 pub(crate) struct Quadtree {
@@ -42,7 +43,7 @@ impl Quadtree {
     pub(crate) fn new(storage: &Storage) -> Self {
         let width = storage.red.shape()[1];
         let height = storage.red.shape()[0];
-        let root = Quadrant::new(0, 0, width, height, 0, storage);
+        let root = Quadrant::new(0, 0, width, height, 0, 0, storage);
         Self {
             width,
             height,
@@ -55,7 +56,7 @@ impl Quadtree {
         self.root.split(storage);
     }
 
-    fn leaves(&self) -> Vec<Quadrant> {
+    pub(crate) fn leaves(&self) -> Vec<Quadrant> {
         let mut leaves = Vec::new();
         let mut stack = vec![&self.root];
         while let Some(quadrant) = stack.pop() {
@@ -93,12 +94,13 @@ impl Quadtree {
 }
 
 #[derive(Clone)]
-struct Quadrant {
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    depth: usize,
+pub(crate) struct Quadrant {
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) depth: usize,
+    pub(crate) index: usize,
     children: Option<Box<[Quadrant; 4]>>,
     detail: f32,
 }
@@ -110,6 +112,7 @@ impl Quadrant {
         width: usize,
         height: usize,
         depth: usize,
+        index: usize,
         storage: &Storage,
     ) -> Self {
         let range = s![y..y + height, x..x + width];
@@ -124,13 +127,14 @@ impl Quadrant {
             width,
             height,
             depth,
+            index,
             children: None,
             detail,
         }
     }
 
     fn split(&mut self, storage: &Storage) {
-        if self.depth >= MAX_DEPTH || self.detail < DETAIL_THRESHOLD {
+        if self.depth >= MAX_DEPTH || (self.detail < DETAIL_THRESHOLD && self.depth >= MIN_DEPTH) {
             return;
         }
 
@@ -138,15 +142,40 @@ impl Quadrant {
         let height = self.height / 2;
         let depth = self.depth + 1;
         let children = [
-            Quadrant::new(self.x, self.y, width, height, depth, storage),
-            Quadrant::new(self.x + width, self.y, width, height, depth, storage),
-            Quadrant::new(self.x, self.y + height, width, height, depth, storage),
+            Quadrant::new(
+                self.x,
+                self.y,
+                width,
+                height,
+                depth,
+                self.index + 1,
+                storage,
+            ),
+            Quadrant::new(
+                self.x + width,
+                self.y,
+                width,
+                height,
+                depth,
+                self.index + 2,
+                storage,
+            ),
+            Quadrant::new(
+                self.x,
+                self.y + height,
+                width,
+                height,
+                depth,
+                self.index + 3,
+                storage,
+            ),
             Quadrant::new(
                 self.x + width,
                 self.y + height,
                 width,
                 height,
                 depth,
+                self.index + 4,
                 storage,
             ),
         ];
