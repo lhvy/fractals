@@ -1,5 +1,4 @@
 mod codec;
-mod quadtree;
 
 use codec::{Adjustments, Coordinate, Transformations};
 use image::{ImageBuffer, Luma};
@@ -11,22 +10,27 @@ use std::io::{Read, Write};
 static GLOBAL: MiMalloc = MiMalloc;
 
 const FACTOR: usize = 1;
-const SRC_SIZE: usize = DEST_SIZE * 2;
-const DEST_SIZE: usize = 4;
 
 fn main() {
     // Get file name as first command line argument
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <file>", args[0]);
+    if args.len() < 2 || args.len() > 3 {
+        eprintln!("Usage: {} <file> [<dest_size>]", args[0]);
         std::process::exit(1);
     }
 
-    // Open image as RGB
-    // let img = image::open(&args[1]).unwrap().to_rgb8();
-    // let storage = quadtree::Storage::new(img);
-    // let mut quadtree = quadtree::Quadtree::new(&storage);
-    // quadtree.build(&storage);
+    let dest_size = if args.len() == 3 {
+        args[2].parse().unwrap()
+    } else {
+        4
+    };
+    // if dest_size is not power of 2, complain
+    if dest_size & (dest_size - 1) != 0 {
+        eprintln!("dest_size must be power of 2");
+        std::process::exit(1);
+    }
+
+    let src_size: usize = dest_size * 2;
 
     // Ensure image is grayscale
     let img = image::open(&args[1]).unwrap().to_luma8();
@@ -43,16 +47,21 @@ fn main() {
         .create(true)
         .open("output/compressed.leic")
         .unwrap();
-    compress(img, &compressed);
+    compress(img, &compressed, src_size, dest_size);
     drop(compressed);
 
     let mut compressed = std::fs::File::open("output/compressed.leic").unwrap();
-    decompress(&mut compressed);
+    decompress(&mut compressed, src_size, dest_size);
 }
 
-fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, mut compressed: &std::fs::File) {
-    let width = img.width() as usize / FACTOR / DEST_SIZE;
-    let height = img.height() as usize / FACTOR / DEST_SIZE;
+fn compress(
+    img: ImageBuffer<Luma<u8>, Vec<u8>>,
+    mut compressed: &std::fs::File,
+    src_size: usize,
+    dest_size: usize,
+) {
+    let width = img.width() as usize / FACTOR / dest_size;
+    let height = img.height() as usize / FACTOR / dest_size;
     let len = width * height;
 
     let header_size = std::mem::size_of::<usize>() * 2;
@@ -95,8 +104,8 @@ fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, mut compressed: &std::fs::File)
 
     codec::compress(
         codec::reduce(&img, FACTOR),
-        SRC_SIZE,
-        DEST_SIZE,
+        src_size,
+        dest_size,
         transformations,
     );
 
@@ -111,7 +120,7 @@ fn compress(img: ImageBuffer<Luma<u8>, Vec<u8>>, mut compressed: &std::fs::File)
     }
 }
 
-fn decompress(compressed: &mut std::fs::File) {
+fn decompress(compressed: &mut std::fs::File, src_size: usize, dest_size: usize) {
     let file_len = compressed.metadata().unwrap().len() as usize;
     let mut data = Vec::new();
     compressed.read_to_end(&mut data).unwrap();
@@ -152,7 +161,7 @@ fn decompress(compressed: &mut std::fs::File) {
         }
     };
 
-    let iterations = codec::decompress(t, SRC_SIZE, DEST_SIZE);
+    let iterations = codec::decompress(t, src_size, dest_size);
 
     for (i, iteration) in iterations.iter().enumerate() {
         let img = ImageBuffer::from_fn(
