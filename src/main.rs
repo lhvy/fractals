@@ -17,59 +17,59 @@ const FACTOR: usize = 1;
 fn main() {
     // Get file name as first command line argument
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 || args.len() > 4 {
+    if args.len() < 3 || args.len() > 5 {
         eprintln!(
-            "Usage: {} <file> [<max_depth>] [<detail_threshold>]",
+            "Usage: {} --encode/decode <file> [<max_depth>] [<detail_threshold>]",
             args[0]
         );
         std::process::exit(1);
     }
 
     let max_depth = args
-        .get(2)
+        .get(3)
         .map_or(quadtree::DEFAULT_MAX_DEPTH, |s| s.parse().unwrap());
     let detail_threshold = args
-        .get(3)
+        .get(4)
         .map_or(quadtree::DEFAULT_DETAIL_THRESHOLD, |s| s.parse().unwrap());
 
-    // Open image as RGB
-    let img = image::open(&args[1]).unwrap().to_rgb8();
-    let storage = quadtree::Storage::new(img, max_depth, detail_threshold);
-    let quadtree = quadtree::Quadtree::new(&storage);
-    let mut leaves = quadtree.leaves();
+    if args[1] == "--encode" {
+        println!("Generating quadtree");
+        // Open image as RGB
+        let img = image::open(&args[2]).unwrap().to_rgb8();
+        let storage = quadtree::Storage::new(img, max_depth, detail_threshold);
+        let quadtree = quadtree::Quadtree::new(&storage);
+        let mut leaves = quadtree.leaves();
 
-    // Sort leaves by leave.index
-    leaves.sort_by_key(|leave| leave.index);
-    // Indexes are increasing, but make them consecutive starting from 0
-    for (i, leave) in leaves.iter_mut().enumerate() {
-        leave.index = i;
+        // Sort leaves by leave.index
+        leaves.sort_by_key(|leave| leave.index);
+        // Indexes are increasing, but make them consecutive starting from 0
+        for (i, leave) in leaves.iter_mut().enumerate() {
+            leave.index = i;
+        }
+
+        // Ensure image is grayscale
+        let img = image::open(&args[2]).unwrap().to_luma8();
+        // Crash if image is not square
+        assert_eq!(img.width(), img.height());
+
+        let _ = std::fs::create_dir("output");
+        quadtree
+            .create_image(&storage)
+            .save("output/quadtree.jpg")
+            .unwrap();
+        let compressed = std::fs::File::create("output/compressed.leic").unwrap();
+        compress(img, &leaves, &compressed);
+        drop(compressed);
+    } else if args[1] == "--decode" {
+        let mut compressed = std::fs::File::open("output/compressed.leic").unwrap();
+        decompress(&mut compressed);
+    } else {
+        eprintln!(
+            "Usage: {} --encode/decode <file> [<max_depth>] [<detail_threshold>]",
+            args[0]
+        );
+        std::process::exit(1);
     }
-
-    // Ensure image is grayscale
-    let img = image::open(&args[1]).unwrap().to_luma8();
-    // Crash if image is not square
-    assert_eq!(img.width(), img.height());
-
-    // Erase contents of output directory
-    std::fs::remove_dir_all("output").unwrap();
-    std::fs::create_dir("output").unwrap();
-
-    quadtree
-        .create_image(&storage)
-        .save("output/quadtree.jpg")
-        .unwrap();
-
-    let compressed = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open("output/compressed.leic")
-        .unwrap();
-    compress(img, &leaves, &compressed);
-    drop(compressed);
-
-    let mut compressed = std::fs::File::open("output/compressed.leic").unwrap();
-    decompress(&mut compressed);
 }
 
 fn compress(
@@ -123,11 +123,21 @@ fn compress(
         }
     };
 
+    println!("Applying fractal compression");
     codec::compress(codec::reduce(&img, FACTOR), leaves, transformations);
 
+    println!(
+        "       fractal compressed file with size: {:>9}",
+        data.len()
+    );
     compressed
         .write_all(lzma::compress(data, 9 | EXTREME_PRESET).unwrap().as_slice())
         .unwrap();
+    println!(
+        "lzma + fractal compressed file with size: {:>9}",
+        compressed.metadata().unwrap().len()
+    );
+
     unsafe {
         std::alloc::dealloc(
             data.as_mut_ptr(),
@@ -137,17 +147,12 @@ fn compress(
 }
 
 fn decompress(compressed: &mut std::fs::File) {
-    let file_len = compressed.metadata().unwrap().len() as usize;
+    println!("Decompressing lzma file");
     let mut data = Vec::new();
     compressed.read_to_end(&mut data).unwrap();
     let mut data = lzma::decompress(&data).unwrap();
 
-    println!("lzma + fractal compressed file with size: {:>9}", file_len);
-    println!(
-        "       fractal compressed file with size: {:>9}",
-        data.len()
-    );
-
+    println!("Decompressing fractal file");
     let t = unsafe {
         let ptr = data.as_mut_ptr().cast::<Header>();
         let header = *ptr;
