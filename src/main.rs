@@ -25,8 +25,7 @@ fn main() {
     // Open image as RGB
     let img = image::open(&args[1]).unwrap().to_rgb8();
     let storage = quadtree::Storage::new(img);
-    let mut quadtree = quadtree::Quadtree::new(&storage);
-    quadtree.build(&storage);
+    let quadtree = quadtree::Quadtree::new(&storage);
     let mut leaves = quadtree.leaves();
 
     // Sort leaves by leave.index
@@ -45,13 +44,18 @@ fn main() {
     std::fs::remove_dir_all("output").unwrap();
     std::fs::create_dir("output").unwrap();
 
+    quadtree
+        .create_image(&storage)
+        .save("output/quadtree.jpg")
+        .unwrap();
+
     let compressed = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open("output/compressed.leic")
         .unwrap();
-    compress(img, leaves, &compressed);
+    compress(img, &leaves, &compressed);
     drop(compressed);
 
     let mut compressed = std::fs::File::open("output/compressed.leic").unwrap();
@@ -60,7 +64,7 @@ fn main() {
 
 fn compress(
     img: ImageBuffer<Luma<u8>, Vec<u8>>,
-    leaves: Vec<Quadrant>,
+    leaves: &[Quadrant],
     mut compressed: &std::fs::File,
 ) {
     let len = leaves.len();
@@ -70,14 +74,12 @@ fn compress(
 
     let header_size = std::mem::size_of::<Header>();
     let src_coordinate_size = std::mem::size_of::<Coordinate>() * len;
-    let dest_coordinate_size = std::mem::size_of::<Coordinate>() * len;
     let scale_size = len;
     let is_flipped_size = len.div_ceil(8);
     let degrees_size = len.div_ceil(4);
     let adjustments_size = std::mem::size_of::<Adjustments>() * len;
     let file_len = header_size
         + src_coordinate_size
-        + dest_coordinate_size
         + scale_size
         + is_flipped_size
         + degrees_size
@@ -95,8 +97,7 @@ fn compress(
         *ptr = header;
 
         let src_coordinate = ptr.add(1).cast::<u8>();
-        let dest_coordinate = src_coordinate.add(src_coordinate_size);
-        let scale = dest_coordinate.add(dest_coordinate_size);
+        let scale = src_coordinate.add(src_coordinate_size);
         let adjustments = scale.add(scale_size);
         let is_flipped = adjustments.add(adjustments_size);
         let degrees = is_flipped.add(is_flipped_size);
@@ -104,7 +105,6 @@ fn compress(
         Transformations {
             header,
             src_coordinate: std::slice::from_raw_parts_mut(src_coordinate.cast(), len),
-            dest_coordinate: std::slice::from_raw_parts_mut(dest_coordinate.cast(), len),
             scale: std::slice::from_raw_parts_mut(scale.cast(), len),
             is_flipped: std::slice::from_raw_parts_mut(is_flipped, is_flipped_size),
             degrees: std::slice::from_raw_parts_mut(degrees, degrees_size),
@@ -113,7 +113,7 @@ fn compress(
         }
     };
 
-    codec::compress(codec::reduce(&img, FACTOR), &leaves, transformations);
+    codec::compress(codec::reduce(&img, FACTOR), leaves, transformations);
 
     compressed
         .write_all(lzma::compress(data, 9 | EXTREME_PRESET).unwrap().as_slice())
@@ -144,15 +144,13 @@ fn decompress(compressed: &mut std::fs::File) {
         let len = header.len as usize;
 
         let src_coordinate_size = len * std::mem::size_of::<Coordinate>();
-        let dest_coordinate_size = len * std::mem::size_of::<Coordinate>();
         let scale_size = len;
         let is_flipped_size = len.div_ceil(8);
         let degrees_size = len.div_ceil(4);
         let adjustments_size = std::mem::size_of::<Adjustments>() * len;
 
         let src_coordinate = ptr.add(1).cast::<u8>();
-        let dest_coordinate = src_coordinate.add(src_coordinate_size);
-        let scale = dest_coordinate.add(dest_coordinate_size);
+        let scale = src_coordinate.add(src_coordinate_size);
         let adjustments = scale.add(scale_size);
         let is_flipped = adjustments.add(adjustments_size);
         let degrees = is_flipped.add(is_flipped_size);
@@ -160,7 +158,6 @@ fn decompress(compressed: &mut std::fs::File) {
         Transformations {
             header,
             src_coordinate: std::slice::from_raw_parts_mut(src_coordinate.cast(), len),
-            dest_coordinate: std::slice::from_raw_parts_mut(dest_coordinate.cast(), len),
             scale: std::slice::from_raw_parts_mut(scale.cast(), len),
             is_flipped: std::slice::from_raw_parts_mut(is_flipped, is_flipped_size),
             degrees: std::slice::from_raw_parts_mut(degrees, degrees_size),

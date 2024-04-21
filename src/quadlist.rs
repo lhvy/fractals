@@ -1,7 +1,7 @@
 use crate::codec::Index;
 use std::cmp::Ordering;
 
-struct QuadrantIterator {
+pub(crate) struct QuadrantIterator {
     image_diameter: Index,
     steps: Vec<QuadrantStep>,
 }
@@ -16,25 +16,25 @@ enum QuadrantStep {
 }
 
 impl QuadrantIterator {
-    fn new(image_diameter: Index) -> Self {
+    pub(crate) fn new(image_diameter: Index) -> Self {
         Self {
             image_diameter,
             steps: Vec::new(),
         }
     }
 
-    fn step(&mut self, depth: usize) -> (Index, Index) {
+    pub(crate) fn step(&mut self, depth: usize) -> (Index, Index) {
         match self.steps.len().cmp(&depth) {
-            Ordering::Greater => self.up(),
+            Ordering::Greater => self.up(depth),
             Ordering::Equal => self.next(),
             Ordering::Less => self.deeper(depth - self.steps.len()),
         }
 
-        dbg!(depth, self.current_position(), &self.steps);
+        // dbg!(depth, self.current_position(), &self.steps);
         self.current_position()
     }
 
-    fn up(&mut self) {
+    fn up(&mut self, depth: usize) {
         assert_eq!(*self.steps.last().unwrap(), QuadrantStep::BottomRight);
 
         while let Some(QuadrantStep::BottomRight) = self.steps.last().copied() {
@@ -43,6 +43,12 @@ impl QuadrantIterator {
 
         if let Some(step) = self.steps.last().copied() {
             *self.steps.last_mut().unwrap() = step.next()
+        }
+
+        let mut new_depth = self.steps.len();
+        while new_depth < depth {
+            self.steps.push(QuadrantStep::TopLeft);
+            new_depth += 1;
         }
     }
 

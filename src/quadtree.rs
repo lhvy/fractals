@@ -52,10 +52,6 @@ impl Quadtree {
         }
     }
 
-    pub(crate) fn build(&mut self, storage: &Storage) {
-        self.root.split(storage);
-    }
-
     pub(crate) fn leaves(&self) -> Vec<Quadrant> {
         let mut leaves = Vec::new();
         let mut stack = vec![&self.root];
@@ -93,7 +89,7 @@ impl Quadtree {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Quadrant {
     pub(crate) x: usize,
     pub(crate) y: usize,
@@ -121,7 +117,7 @@ impl Quadrant {
             &histogram(storage.green.slice(range)),
             &histogram(storage.blue.slice(range)),
         );
-        Self {
+        let mut new = Self {
             x,
             y,
             width,
@@ -130,10 +126,26 @@ impl Quadrant {
             index,
             children: None,
             detail,
+        };
+        new.split(storage);
+
+        new
+    }
+
+    fn max_index(&self) -> usize {
+        if let Some(children) = &self.children {
+            children
+                .iter()
+                .map(|child| child.max_index())
+                .max()
+                .unwrap()
+        } else {
+            self.index
         }
     }
 
     fn split(&mut self, storage: &Storage) {
+        // println!("{}, {}, {}, {}", self.x, self.y, self.depth, self.index);
         if self.depth >= MAX_DEPTH || (self.detail < DETAIL_THRESHOLD && self.depth >= MIN_DEPTH) {
             return;
         }
@@ -141,51 +153,51 @@ impl Quadrant {
         let width = self.width / 2;
         let height = self.height / 2;
         let depth = self.depth + 1;
-        let children = [
-            Quadrant::new(
-                self.x,
-                self.y,
-                width,
-                height,
-                depth,
-                self.index + 1,
-                storage,
-            ),
-            Quadrant::new(
-                self.x + width,
-                self.y,
-                width,
-                height,
-                depth,
-                self.index + 2,
-                storage,
-            ),
-            Quadrant::new(
-                self.x,
-                self.y + height,
-                width,
-                height,
-                depth,
-                self.index + 3,
-                storage,
-            ),
-            Quadrant::new(
-                self.x + width,
-                self.y + height,
-                width,
-                height,
-                depth,
-                self.index + 4,
-                storage,
-            ),
-        ];
+
+        let top_left = Quadrant::new(
+            self.x,
+            self.y,
+            width,
+            height,
+            depth,
+            self.index + 1,
+            storage,
+        );
+        let top_right = Quadrant::new(
+            self.x + width,
+            self.y,
+            width,
+            height,
+            depth,
+            top_left.max_index() + 1,
+            storage,
+        );
+        let bottom_left = Quadrant::new(
+            self.x,
+            self.y + height,
+            width,
+            height,
+            depth,
+            top_right.max_index() + 1,
+            storage,
+        );
+        let bottom_right = Quadrant::new(
+            self.x + width,
+            self.y + height,
+            width,
+            height,
+            depth,
+            bottom_left.max_index() + 1,
+            storage,
+        );
+        let children = [top_left, top_right, bottom_left, bottom_right];
         self.children = Some(Box::new(children));
 
-        if let Some(children) = &mut self.children {
-            for child in children.iter_mut() {
-                child.split(storage);
-            }
-        }
+        // if let Some(children) = &mut self.children {
+        //     for child in children.iter_mut() {
+        //         child.split(storage);
+        //     }
+        // }
     }
 }
 

@@ -1,5 +1,6 @@
 mod transformations_cache;
 
+use crate::quadlist::QuadrantIterator;
 use crate::quadtree::Quadrant;
 use image::{ImageBuffer, Luma};
 use ndarray::{s, Array1, Array2, Axis};
@@ -31,7 +32,6 @@ impl Header {
 pub(crate) struct Transformations<'a> {
     pub(crate) header: Header,
     pub(crate) src_coordinate: &'a mut [Coordinate],
-    pub(crate) dest_coordinate: &'a mut [Coordinate],
     pub(crate) scale: &'a mut [u8],
     pub(crate) is_flipped: &'a mut [u8],
     pub(crate) degrees: &'a mut [u8],
@@ -43,8 +43,6 @@ pub(crate) struct Transformations<'a> {
 struct Transformation {
     src_x: Index,
     src_y: Index,
-    dest_x: Index,
-    dest_y: Index,
     scale: u8,
     is_flipped: bool,
     degrees: Rotation,
@@ -120,8 +118,6 @@ impl Transformations<'_> {
         Transformation {
             src_x: self.src_coordinate[i].x,
             src_y: self.src_coordinate[i].y,
-            dest_x: self.dest_coordinate[i].x,
-            dest_y: self.dest_coordinate[i].y,
             scale: self.scale[i],
             is_flipped,
             degrees,
@@ -129,29 +125,27 @@ impl Transformations<'_> {
         }
     }
 
-    fn push(
+    fn insert(
         &mut self,
         Transformation {
             src_x,
             src_y,
-            dest_x,
-            dest_y,
             scale,
             is_flipped,
             degrees,
             adjustments,
         }: Transformation,
+        i: usize,
     ) {
-        let i = self.current;
         self.src_coordinate[i] = Coordinate { x: src_x, y: src_y };
-        self.dest_coordinate[i] = Coordinate {
-            x: dest_x,
-            y: dest_y,
-        };
         self.scale[i] = scale;
         self.is_flipped[i / 8] |= (is_flipped as u8) << (i % 8);
         self.degrees[i / 4] |= (degrees as u8) << ((i % 4) * 2);
         self.adjustments[i] = adjustments;
+    }
+
+    fn push(&mut self, t: Transformation) {
+        self.insert(t, self.current);
         self.current += 1;
     }
 }
@@ -166,7 +160,7 @@ pub(crate) fn compress(m: Array2<Float>, leaves: &[Quadrant], result: Transforma
     let result_mutex = parking_lot::Mutex::new(result);
     let chunk_count = std::thread::available_parallelism().unwrap().get() * 3;
     leaves
-        .par_chunks(leaves.len() / chunk_count)
+        .par_chunks(leaves.len().div_ceil(chunk_count))
         .for_each(|dest_quadrants| {
             for dest_quadrant in dest_quadrants {
                 let mut min = Float::INFINITY;
@@ -196,13 +190,13 @@ pub(crate) fn compress(m: Array2<Float>, leaves: &[Quadrant], result: Transforma
                             continue;
                         }
                         t.adjustments = adjustments;
-                        t.dest_x = dest_quadrant.x as u16;
-                        t.dest_y = dest_quadrant.y as u16;
                         min_t = Some(t);
                         min = d;
                     }
                 }
-                result_mutex.lock().push(min_t.unwrap());
+                result_mutex
+                    .lock()
+                    .insert(min_t.unwrap(), dest_quadrant.index);
                 bar.inc(1);
             }
         });
@@ -238,14 +232,15 @@ pub(crate) fn decompress(transformations: Transformations) -> Vec<Array2<Float>>
         ),
         |(_, _)| rng.gen_range(0..256) as Float,
     ));
-    dbg!(&transformations.header);
+    // TODO: Use width AND height
+    let mut coords = QuadrantIterator::new(transformations.header.width);
 
     for i in 0..8 {
         let mut next = Array2::zeros((
             transformations.header.height as usize,
             transformations.header.width as usize,
         ));
-        for t in 0..transformations.dest_coordinate.len() {
+        for t in 0..transformations.header.len as usize {
             let transformation = transformations.get_index(t);
             let src_width = transformations.header.width as usize
                 / 2_usize.pow(transformation.scale as u32 - 1);
@@ -261,14 +256,15 @@ pub(crate) fn decompress(transformations: Transformations) -> Vec<Array2<Float>>
                 },
                 2,
             );
+            let (dest_x, dest_y) = coords.step(transformation.scale as usize);
             let dest_block = transform(src_block, &transformation);
             let dest_width =
                 transformations.header.width as usize / 2_usize.pow(transformation.scale as u32);
             let dest_height =
                 transformations.header.height as usize / 2_usize.pow(transformation.scale as u32);
             next.slice_mut(s![
-                transformation.dest_y as usize..transformation.dest_y as usize + dest_height,
-                transformation.dest_x as usize..transformation.dest_x as usize + dest_width,
+                dest_y as usize..dest_y as usize + dest_height,
+                dest_x as usize..dest_x as usize + dest_width,
             ])
             .assign(&dest_block);
         }

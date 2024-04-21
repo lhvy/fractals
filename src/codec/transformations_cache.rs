@@ -53,11 +53,6 @@ fn gen_all_transformations(
                     .cast(),
                 n,
             ),
-            dest_coordinate: std::slice::from_raw_parts_mut(
-                std::alloc::alloc_zeroed(std::alloc::Layout::array::<Coordinate>(n).unwrap())
-                    .cast(),
-                n,
-            ),
             scale: std::slice::from_raw_parts_mut(
                 std::alloc::alloc_zeroed(std::alloc::Layout::array::<u8>(n).unwrap()).cast(),
                 n,
@@ -91,8 +86,6 @@ fn gen_all_transformations(
                     let t = Transformation {
                         src_x: x as Index,
                         src_y: y as Index,
-                        dest_x: 0,
-                        dest_y: 0,
                         scale: depth,
                         is_flipped,
                         degrees,
