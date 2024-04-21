@@ -2,8 +2,6 @@ use image::{ImageBuffer, Rgb};
 use ndarray::{s, Array2, ArrayView2};
 
 const MIN_DEPTH: usize = 1;
-pub(crate) const DEFAULT_MAX_DEPTH: usize = 6;
-pub(crate) const DEFAULT_DETAIL_THRESHOLD: f32 = 5.0;
 
 pub(crate) struct Quadtree {
     width: usize,
