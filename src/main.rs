@@ -1,5 +1,8 @@
+mod cli;
 mod codec;
 
+use clap::Parser;
+use cli::Args;
 use codec::{Adjustments, Coordinate, Transformations};
 use image::{ImageBuffer, Luma};
 use lzma::EXTREME_PRESET;
@@ -12,46 +15,59 @@ static GLOBAL: MiMalloc = MiMalloc;
 const FACTOR: usize = 1;
 
 fn main() {
-    // Get file name as first command line argument
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 || args.len() > 3 {
-        eprintln!("Usage: {} <file> [<dest_size>]", args[0]);
-        std::process::exit(1);
-    }
+    let args = Args::parse();
 
-    let dest_size = if args.len() == 3 {
-        args[2].parse().unwrap()
-    } else {
-        4
+    let dest_size = match &args.cmd {
+        cli::Command::Encode(e) => e.dest_size,
+        cli::Command::Decode(d) => d.dest_size,
+        cli::Command::Test(t) => t.dest_size,
     };
     // if dest_size is not power of 2, complain
     if dest_size & (dest_size - 1) != 0 {
         eprintln!("dest_size must be power of 2");
         std::process::exit(1);
     }
-
     let src_size: usize = dest_size * 2;
 
+    match args.cmd {
+        cli::Command::Encode(e) => {
+            compress_command(e, src_size, dest_size);
+        }
+        cli::Command::Decode(d) => {
+            let path = match d.output {
+                Some(path) => path,
+                None => "output".to_string(),
+            };
+            let mut compressed = std::fs::File::open(d.file).unwrap();
+            decompress(&mut compressed, &path, src_size, dest_size);
+        }
+        cli::Command::Test(t) => {
+            compress_command(t.clone(), src_size, dest_size);
+            let path = match t.output {
+                Some(path) => path,
+                None => "output".to_string(),
+            };
+            let mut compressed = std::fs::File::open(format!("{}/compressed.leic", path)).unwrap();
+            decompress(&mut compressed, &path, src_size, dest_size);
+        }
+    }
+}
+
+fn compress_command(value: cli::Value, src_size: usize, dest_size: usize) {
     // Ensure image is grayscale
-    let img = image::open(&args[1]).unwrap().to_luma8();
+    let img = image::open(value.file).unwrap().to_luma8();
     // Crash if image is not square
     assert_eq!(img.width(), img.height());
 
-    // Erase contents of output directory
-    std::fs::remove_dir_all("output").unwrap();
-    std::fs::create_dir("output").unwrap();
+    let path = match value.output {
+        Some(path) => path,
+        None => "output".to_string(),
+    };
+    let _ = std::fs::create_dir(&path);
 
-    let compressed = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open("output/compressed.leic")
-        .unwrap();
+    let compressed = std::fs::File::create(format!("{}/compressed.leic", path)).unwrap();
     compress(img, &compressed, src_size, dest_size);
     drop(compressed);
-
-    let mut compressed = std::fs::File::open("output/compressed.leic").unwrap();
-    decompress(&mut compressed, src_size, dest_size);
 }
 
 fn compress(
@@ -109,9 +125,18 @@ fn compress(
         transformations,
     );
 
+    println!(
+        "       fractal compressed file with size: {:>9}",
+        data.len()
+    );
     compressed
         .write_all(lzma::compress(data, 9 | EXTREME_PRESET).unwrap().as_slice())
         .unwrap();
+    println!(
+        "lzma + fractal compressed file with size: {:>9}",
+        compressed.metadata().unwrap().len()
+    );
+
     unsafe {
         std::alloc::dealloc(
             data.as_mut_ptr(),
@@ -120,18 +145,13 @@ fn compress(
     }
 }
 
-fn decompress(compressed: &mut std::fs::File, src_size: usize, dest_size: usize) {
-    let file_len = compressed.metadata().unwrap().len() as usize;
+fn decompress(compressed: &mut std::fs::File, path: &str, src_size: usize, dest_size: usize) {
+    println!("Decompressing lzma file");
     let mut data = Vec::new();
     compressed.read_to_end(&mut data).unwrap();
     let mut data = lzma::decompress(&data).unwrap();
 
-    println!("lzma + fractal compressed file with size: {:>9}", file_len);
-    println!(
-        "       fractal compressed file with size: {:>9}",
-        data.len()
-    );
-
+    println!("Decompressing fractal file");
     let t = unsafe {
         let mut ptr = data.as_mut_ptr().cast::<usize>();
         let width = *ptr;
@@ -163,12 +183,13 @@ fn decompress(compressed: &mut std::fs::File, src_size: usize, dest_size: usize)
 
     let iterations = codec::decompress(t, src_size, dest_size);
 
+    let _ = std::fs::create_dir(path);
     for (i, iteration) in iterations.iter().enumerate() {
         let img = ImageBuffer::from_fn(
             iteration.nrows() as u32,
             iteration.ncols() as u32,
             |x, y| Luma([iteration[[y as usize, x as usize]] as u8]),
         );
-        img.save(format!("output/output-{}.jpg", i)).unwrap();
+        img.save(format!("{}/output-{}.jpg", path, i)).unwrap();
     }
 }
