@@ -2,13 +2,12 @@ use image::{ImageBuffer, Rgb};
 use ndarray::{s, Array2, ArrayView2};
 
 const MIN_DEPTH: usize = 1;
-const MAX_DEPTH: usize = 6;
-const DETAIL_THRESHOLD: f32 = 5.0;
+pub(crate) const DEFAULT_MAX_DEPTH: usize = 6;
+pub(crate) const DEFAULT_DETAIL_THRESHOLD: f32 = 5.0;
 
 pub(crate) struct Quadtree {
     width: usize,
     height: usize,
-    depth: usize,
     root: Quadrant,
 }
 
@@ -16,10 +15,16 @@ pub(crate) struct Storage {
     red: Array2<u8>,
     green: Array2<u8>,
     blue: Array2<u8>,
+    max_depth: usize,
+    detail_threshold: f32,
 }
 
 impl Storage {
-    pub(crate) fn new(img: ImageBuffer<Rgb<u8>, Vec<u8>>) -> Self {
+    pub(crate) fn new(
+        img: ImageBuffer<Rgb<u8>, Vec<u8>>,
+        max_depth: usize,
+        detail_threshold: f32,
+    ) -> Self {
         let width = img.width() as usize;
         let height = img.height() as usize;
         let mut red = Array2::zeros((height, width));
@@ -35,7 +40,13 @@ impl Storage {
             }
         }
 
-        Self { red, green, blue }
+        Self {
+            red,
+            green,
+            blue,
+            max_depth,
+            detail_threshold,
+        }
     }
 }
 
@@ -43,11 +54,15 @@ impl Quadtree {
     pub(crate) fn new(storage: &Storage) -> Self {
         let width = storage.red.shape()[1];
         let height = storage.red.shape()[0];
+        if (width / 2_usize.pow(storage.max_depth as u32) < 4)
+            || (height / 2_usize.pow(storage.max_depth as u32) < 4)
+        {
+            panic!("Image is too small for the given depth. Aiming for at least 4x4 pixels per quadrant.");
+        }
         let root = Quadrant::new(0, 0, width, height, 0, 0, storage);
         Self {
             width,
             height,
-            depth: 0,
             root,
         }
     }
@@ -146,7 +161,9 @@ impl Quadrant {
 
     fn split(&mut self, storage: &Storage) {
         // println!("{}, {}, {}, {}", self.x, self.y, self.depth, self.index);
-        if self.depth >= MAX_DEPTH || (self.detail < DETAIL_THRESHOLD && self.depth >= MIN_DEPTH) {
+        if self.depth >= storage.max_depth
+            || (self.detail < storage.detail_threshold && self.depth >= MIN_DEPTH)
+        {
             return;
         }
 

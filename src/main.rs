@@ -17,14 +17,24 @@ const FACTOR: usize = 1;
 fn main() {
     // Get file name as first command line argument
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <file>", args[0]);
+    if args.len() < 2 || args.len() > 4 {
+        eprintln!(
+            "Usage: {} <file> [<max_depth>] [<detail_threshold>]",
+            args[0]
+        );
         std::process::exit(1);
     }
 
+    let max_depth = args
+        .get(2)
+        .map_or(quadtree::DEFAULT_MAX_DEPTH, |s| s.parse().unwrap());
+    let detail_threshold = args
+        .get(3)
+        .map_or(quadtree::DEFAULT_DETAIL_THRESHOLD, |s| s.parse().unwrap());
+
     // Open image as RGB
     let img = image::open(&args[1]).unwrap().to_rgb8();
-    let storage = quadtree::Storage::new(img);
+    let storage = quadtree::Storage::new(img, max_depth, detail_threshold);
     let quadtree = quadtree::Quadtree::new(&storage);
     let mut leaves = quadtree.leaves();
 
