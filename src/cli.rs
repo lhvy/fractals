@@ -14,6 +14,7 @@ pub(crate) enum Command {
     /// Test is a combination of both encode and decode
     /// It takes the same arguments as encode
     Test(Encode),
+    Error(Error),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -36,4 +37,10 @@ pub(crate) struct Decode {
 
     #[arg(short, long)]
     pub(crate) output: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub(crate) struct Error {
+    pub(crate) input: String,
+    pub(crate) output: String,
 }
