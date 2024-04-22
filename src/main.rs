@@ -21,6 +21,7 @@ fn main() {
         cli::Command::Encode(e) => e.dest_size,
         cli::Command::Decode(d) => d.dest_size,
         cli::Command::Test(t) => t.dest_size,
+        cli::Command::Error(_) => 4,
     };
     // if dest_size is not power of 2, complain
     if dest_size & (dest_size - 1) != 0 {
@@ -49,6 +50,11 @@ fn main() {
             };
             let mut compressed = std::fs::File::open(format!("{}/compressed.leic", path)).unwrap();
             decompress(&mut compressed, &path, src_size, dest_size);
+        }
+        cli::Command::Error(e) => {
+            let input = image::open(e.input).unwrap().to_luma8();
+            let output = image::open(e.output).unwrap().to_luma8();
+            compare_error(input, output);
         }
     }
 }
@@ -192,4 +198,24 @@ fn decompress(compressed: &mut std::fs::File, path: &str, src_size: usize, dest_
         );
         img.save(format!("{}/output-{}.jpg", path, i)).unwrap();
     }
+}
+
+fn compare_error(input: ImageBuffer<Luma<u8>, Vec<u8>>, output: ImageBuffer<Luma<u8>, Vec<u8>>) {
+    // Assert images are the same size
+    assert_eq!(input.width(), output.width());
+    assert_eq!(input.height(), output.height());
+
+    // Peak Signal to Noise Ratio
+    let sq = input
+        .pixels()
+        .zip(output.pixels())
+        .map(|(i, o)| {
+            let i = i[0] as f64;
+            let o = o[0] as f64;
+            (i - o).powi(2)
+        })
+        .sum::<f64>();
+    let mse = sq / (input.width() * input.height()) as f64;
+    let psnr = 10.0 * (255.0 * 255.0 / mse).log10();
+    println!("PSNR: {}", psnr);
 }

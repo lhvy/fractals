@@ -12,6 +12,7 @@ pub(crate) enum Command {
     Encode(Value),
     Decode(Value),
     Test(Value),
+    Error(Error),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -23,4 +24,10 @@ pub(crate) struct Value {
 
     #[arg(short, long)]
     pub(crate) output: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub(crate) struct Error {
+    pub(crate) input: String,
+    pub(crate) output: String,
 }
